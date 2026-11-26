@@ -30,6 +30,7 @@ interface LlmModalProps {
   activeAgentId: string;
   traces: LlmTrace[];
   onSelectAgentId: (agentId: string) => void;
+  onRetryConnection: () => void;
   onClose: () => void;
   onTracesUpdated: (traces: LlmTrace[]) => void;
 }
@@ -55,6 +56,7 @@ export function LlmModal({
   activeAgentId,
   traces,
   onSelectAgentId,
+  onRetryConnection,
   onClose,
   onTracesUpdated,
 }: LlmModalProps) {
@@ -350,8 +352,18 @@ export function LlmModal({
                 </div>
 
                 {connectionMode !== 'live' ? (
-                  <div className="text-[11px] text-neutral-500">
-                    Start the backend on <code className="font-mono">:8000</code> to scan local models.
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-400">
+                    <span>
+                      Backend <code className="font-mono text-neutral-300">:8000</code> is offline — Test, Save, and Scan PC are disabled in Demo mode.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onRetryConnection}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white text-neutral-950 font-medium hover:bg-neutral-200 transition cursor-pointer shrink-0"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      Reconnect :8000
+                    </button>
                   </div>
                 ) : detectedModels.length > 0 ? (
                   <div className="grid sm:grid-cols-2 gap-1.5 max-h-32 overflow-y-auto hud-scroll">

@@ -561,6 +561,10 @@ export function App() {
         activeAgentId={llmAgentId}
         traces={traces}
         onSelectAgentId={setLlmAgentId}
+        onRetryConnection={() => {
+          setConnMode('connecting');
+          wsClientRef.current?.reconnectNow();
+        }}
         onClose={() => setLlmModalOpen(false)}
         onTracesUpdated={setTraces}
       />

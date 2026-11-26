@@ -187,3 +187,10 @@ def test_save_load_download_upload_and_slots(tmp_path, monkeypatch):
             assert client.post('/api/sim/saves', json={'name': '!!!'}).status_code == 422
             assert client.delete(f'/api/sim/saves/{slot}').status_code == 200
             assert client.get('/api/sim/saves').json()['saves'] == []
+
+
+def test_module_exposes_asgi_app():
+    from app.main import app as asgi_app
+    assert asgi_app is not None
+    with TestClient(asgi_app) as client:
+        assert client.get('/api/health').json()['ok'] is True

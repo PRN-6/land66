@@ -493,3 +493,6 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
             await asyncio.gather(sender, receiver, return_exceptions=True)
 
     return app
+
+
+app = create_app()
