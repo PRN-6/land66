@@ -145,8 +145,13 @@ export interface MemoryItem {
   text: string;
 }
 
+export type AgentRole = 'pioneer' | 'builder' | 'farmer' | 'forager' | 'explorer';
+
 export interface NpcState {
+  id?: string;
   name: string;
+  role?: AgentRole | string;
+  variant?: number;
   position: Vec3;
   grid_pos: Vec3;
   yaw: number;
@@ -162,6 +167,7 @@ export interface NpcState {
   perception: NpcPerception;
   memories: Array<MemoryItem | string>;
   journal: Array<MemoryItem | string>;
+  llm_status?: LlmStatus;
 }
 
 export interface HouseBounds {
@@ -184,6 +190,7 @@ export interface WorldStats {
   blocks_placed: number;
   blocks_broken: number;
   entities_count?: number;
+  agents_count?: number;
 }
 
 export type EntityKind = 'companion' | 'villager' | 'cat' | 'fox' | 'sheep' | 'deer' | 'duck';
@@ -220,6 +227,7 @@ export interface WorldStateSnapshot {
   speed: SimSpeed | number;
   seed: number;
   npc: NpcState;
+  agents?: NpcState[];
   stats: WorldStats;
   entities?: WorldEntity[];
   llm_status: LlmStatus;
@@ -252,6 +260,8 @@ export interface TickUpdateMessage {
 export interface LlmTrace {
   id: string;
   timestamp: string;
+  agent_id?: string;
+  agent_name?: string;
   provider: string;
   model: string;
   latency_ms: number;
@@ -332,6 +342,7 @@ export type InspectTarget =
     }
   | {
       kind: 'npc';
+      agentId?: string;
     }
   | {
       kind: 'entity';
@@ -342,4 +353,5 @@ export type GodTool =
   | { mode: 'inspect' }
   | { mode: 'erase' }
   | { mode: 'object'; object: string; label: string }
-  | { mode: 'entity'; kind: EntityKind; label: string; customName?: string };
+  | { mode: 'entity'; kind: EntityKind; label: string; customName?: string }
+  | { mode: 'agent'; role: AgentRole; label: string; customName?: string };

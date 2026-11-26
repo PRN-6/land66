@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from .brain import Brain
-from .models import ConfigPatch, Control, Intervention, Decision, Provider
+from .models import ConfigPatch, Control, CreateAgentRequest, Decision, Intervention, Provider
 from .simulation import Simulation
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -25,22 +25,57 @@ logger = logging.getLogger("land66")
 class Runtime:
     def __init__(self, seed=66, brain: Brain | None = None):
         self.sim = Simulation(seed)
-        self.brain = brain or Brain(timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "45")))
+        self.default_timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "45"))
+        self.brains: dict[str, Brain] = {
+            "aiden": brain or Brain(timeout=self.default_timeout),
+        }
         self.clients: set[asyncio.Queue] = set()
-        self.thinking_task: asyncio.Task | None = None
+        self.thinking_tasks: dict[str, asyncio.Task] = {}
         self.loop_task: asyncio.Task | None = None
-        self.next_think_tick = 0
+        self.next_think_ticks: dict[str, int] = {"aiden": 0}
+
+    @property
+    def brain(self) -> Brain:
+        return self.brains["aiden"]
+
+    @brain.setter
+    def brain(self, b: Brain) -> None:
+        self.brains["aiden"] = b
+
+    @property
+    def thinking_task(self) -> asyncio.Task | None:
+        return self.thinking_tasks.get("aiden")
+
+    @thinking_task.setter
+    def thinking_task(self, task: asyncio.Task | None) -> None:
+        if task is None:
+            self.thinking_tasks.pop("aiden", None)
+        else:
+            self.thinking_tasks["aiden"] = task
+
+    def get_brain(self, agent_id: str | None = None) -> Brain:
+        aid = agent_id or "aiden"
+        if aid not in self.sim.agents or aid not in self.brains:
+            raise HTTPException(404, f"Unknown agent '{aid}'")
+        return self.brains[aid]
 
     def sync_status(self):
-        b = self.brain
-        self.sim.llm_status.update(provider=b.config.provider, model=b.config.model,
-                                   thinking=self.thinking_task is not None and not self.thinking_task.done(),
-                                   last_latency_ms=b.last_latency_ms, calls_count=b.calls_count,
-                                   fallback_active=b.fallback_active, last_error=b.last_error)
+        for aid, agent in self.sim.agents.items():
+            b = self.brains.get(aid)
+            if not b:
+                continue
+            task = self.thinking_tasks.get(aid)
+            agent.llm_status.update(
+                provider=b.config.provider,
+                model=b.config.model,
+                thinking=task is not None and not task.done(),
+                last_latency_ms=b.last_latency_ms,
+                calls_count=b.calls_count,
+                fallback_active=b.fallback_active,
+                last_error=b.last_error,
+            )
 
     def publish(self, message):
-        # Per-client writers isolate the simulation from slow/disconnected browsers.
-        # Overflow forces reconnect + a full snapshot; never silently lose block deltas.
         for queue in list(self.clients):
             if queue.full():
                 self.clients.discard(queue)
@@ -54,47 +89,61 @@ class Runtime:
         self.sync_status()
         self.publish(dict(type="tick_update", block_updates=self.sim.world.drain_updates(), state=self.sim.snapshot()))
 
-    async def cancel_thinking(self):
-        if self.thinking_task:
-            self.thinking_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.thinking_task
-            self.thinking_task = None
-        self.sim.queued_decision = None
+    async def cancel_thinking(self, agent_id: str | None = None):
+        targets = [agent_id] if agent_id else list(self.thinking_tasks.keys())
+        for aid in targets:
+            task = self.thinking_tasks.pop(aid, None)
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            if aid in self.sim.agents:
+                self.sim.agents[aid].queued_decision = None
         self.sync_status()
 
     async def reset(self, seed):
         await self.cancel_thinking()
+        primary_brain = self.brains["aiden"]
         self.sim = Simulation(seed)
-        self.next_think_tick = 0
+        self.brains = {"aiden": primary_brain}
+        self.next_think_ticks = {"aiden": 0}
         self.sync_status()
         self.publish(self.sim.world_init())
 
     def complete_thinking(self):
-        if not self.thinking_task or not self.thinking_task.done():
-            return
-        decision, trace = self.thinking_task.result()
-        self.thinking_task = None
-        if decision is not None:
-            # start_action only stages a job; restore it to validate without interrupting movement.
-            s = self.sim
-            saved = (s.job, s.current_action, s.target, s.path, s.progress, s.animation)
-            try:
-                valid = s.start_action(decision.action, decision.params)
-            finally:
-                s.job, s.current_action, s.target, s.path, s.progress, s.animation = saved
-            if valid:
-                s.queued_decision = decision
-            else:
-                trace["used_fallback"] = True
-                trace["error"] = "Decision is not executable in the current world/inventory."
-                self.brain.last_error = trace["error"]
-                self.brain.fallback_active = True
-        if trace["used_fallback"]:
-            trace["parsed_decision"] = Decision(thought=self.sim.thought, goal=self.sim.current_goal,
-                                                 action=self.sim.current_action, params={}).model_dump()
-        self.sync_status()
-        self.publish(dict(type="llm_trace", trace=trace))
+        for aid, task in list(self.thinking_tasks.items()):
+            if not task.done():
+                continue
+            del self.thinking_tasks[aid]
+            agent = self.sim.agents.get(aid)
+            b = self.brains.get(aid)
+            if not agent or not b:
+                continue
+            decision, trace = task.result()
+            if decision is not None:
+                saved = (agent.job, agent.current_action, agent.target, agent.path, agent.progress, agent.animation)
+                try:
+                    valid = agent.start_action(decision.action, decision.params)
+                finally:
+                    agent.job, agent.current_action, agent.target, agent.path, agent.progress, agent.animation = saved
+                if valid:
+                    agent.queued_decision = decision
+                else:
+                    trace["used_fallback"] = True
+                    trace["error"] = "Decision is not executable in the current world/inventory."
+                    b.last_error = trace["error"]
+                    b.fallback_active = True
+            if trace["used_fallback"]:
+                trace["parsed_decision"] = Decision(
+                    thought=agent.thought,
+                    goal=agent.current_goal,
+                    action=agent.current_action,
+                    params={},
+                ).model_dump()
+            trace.setdefault("agent_id", aid)
+            trace.setdefault("agent_name", agent.name)
+            self.sync_status()
+            self.publish(dict(type="llm_trace", trace=trace))
 
     async def run(self):
         while True:
@@ -102,19 +151,24 @@ class Runtime:
             try:
                 self.complete_thinking()
                 if not self.sim.paused:
-                    # Speed increases fixed substeps, not wall-time broadcast frequency.
                     for _ in range(self.sim.speed):
                         self.sim.step(.1)
-                    if self.thinking_task is None and self.sim.tick >= self.next_think_tick:
-                        self.thinking_task = asyncio.create_task(self.brain.decide(self.sim.snapshot()))
-                        self.next_think_tick = self.sim.tick + self.brain.config.decision_interval_ticks
+                    for aid, agent in list(self.sim.agents.items()):
+                        b = self.brains.get(aid)
+                        if not b:
+                            continue
+                        next_tick = self.next_think_ticks.get(aid, 0)
+                        if aid not in self.thinking_tasks and self.sim.tick >= next_tick:
+                            snap = self.sim.snapshot_for_agent(aid)
+                            self.thinking_tasks[aid] = asyncio.create_task(b.decide(snap, agent_id=aid))
+                            self.next_think_ticks[aid] = self.sim.tick + b.config.decision_interval_ticks
                     self.broadcast_tick()
             except Exception:
                 logger.exception("Simulation tick failed; pausing for inspection")
                 self.sim.paused = True
                 self.sim.llm_status["last_error"] = "Simulation paused after an internal error; see server logs."
                 self.publish(dict(type="tick_update", block_updates=self.sim.world.drain_updates(), state=self.sim.snapshot()))
-            await asyncio.sleep(max(.001, .1 - (time.monotonic()-started)))
+            await asyncio.sleep(max(.001, .1 - (time.monotonic() - started)))
 
     async def close(self):
         if self.loop_task:
@@ -135,7 +189,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         finally:
             await runtime.close()
 
-    app = FastAPI(title="land66 backend", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="land66 backend", version="1.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
                        allow_methods=["*"], allow_headers=["*"])
 
@@ -151,33 +205,103 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         runtime().sync_status()
         return runtime().sim.snapshot()
 
+    @app.get("/api/agents")
+    async def list_agents():
+        rt = runtime()
+        rt.sync_status()
+        return [
+            {
+                **agent.snapshot(),
+                "llm_config": rt.brains[aid].config.public() if aid in rt.brains else None,
+            }
+            for aid, agent in rt.sim.agents.items()
+        ]
+
+    @app.post("/api/agents")
+    async def create_agent(req: CreateAgentRequest):
+        rt = runtime()
+        pos = (req.x, req.y, req.z) if req.x is not None and req.y is not None and req.z is not None else None
+        if pos is None and req.x is not None and req.z is not None:
+            pos = rt.sim.world.feet_at(req.x, req.z)
+        try:
+            agent = rt.sim.add_agent(name=req.name, role=req.role, pos=pos)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        new_brain = Brain(timeout=rt.default_timeout)
+        if req.llm_config is not None:
+            try:
+                new_brain.configure(req.llm_config.model_dump(exclude_none=True))
+                new_brain.fallback_active = not new_brain.configured()
+            except (ValueError, ValidationError):
+                rt.sim.agents.pop(agent.id, None)
+                raise HTTPException(422, "Invalid initial llm_config for agent")
+        rt.brains[agent.id] = new_brain
+        rt.next_think_ticks[agent.id] = rt.sim.tick
+        rt.broadcast_tick()
+        return {**agent.snapshot(), "llm_config": new_brain.config.public()}
+
+    @app.delete("/api/agents/{agent_id}")
+    async def delete_agent(agent_id: str):
+        rt = runtime()
+        if agent_id == "aiden":
+            raise HTTPException(422, "Cannot remove primary NPC Aiden")
+        if agent_id not in rt.sim.agents:
+            raise HTTPException(404, "Agent not found")
+        await rt.cancel_thinking(agent_id)
+        rt.sim.remove_agent(agent_id)
+        rt.brains.pop(agent_id, None)
+        rt.next_think_ticks.pop(agent_id, None)
+        rt.broadcast_tick()
+        return {"ok": True, "removed": agent_id}
+
     @app.get("/api/llm/config")
-    async def config():
-        return runtime().brain.config.public()
+    async def config(agent_id: str | None = Query(default=None)):
+        return runtime().get_brain(agent_id).config.public()
 
     @app.post("/api/llm/config")
-    async def configure(patch: ConfigPatch):
+    async def configure(patch: ConfigPatch, agent_id: str | None = Query(default=None)):
         rt = runtime()
+        aid = agent_id or "aiden"
+        b = rt.get_brain(aid)
         try:
-            rt.brain.configure(patch.model_dump(exclude_none=True))
+            b.configure(patch.model_dump(exclude_none=True))
         except (ValueError, ValidationError):
-            # Never reflect a validation payload that might contain an API key.
             raise HTTPException(422, "Invalid LLM configuration; check provider, URL and numeric ranges")
-        await rt.cancel_thinking()
-        rt.brain.fallback_active = not rt.brain.configured()
-        rt.brain.last_error = None
-        rt.next_think_tick = rt.sim.tick
+        await rt.cancel_thinking(aid)
+        b.fallback_active = not b.configured()
+        b.last_error = None
+        rt.next_think_ticks[aid] = rt.sim.tick
         rt.broadcast_tick()
-        return rt.brain.config.public()
+        return b.config.public()
+
+    @app.post("/api/llm/apply_all")
+    async def configure_all(patch: ConfigPatch):
+        rt = runtime()
+        data = patch.model_dump(exclude_none=True)
+        for aid, b in list(rt.brains.items()):
+            try:
+                b.configure(data)
+            except (ValueError, ValidationError):
+                raise HTTPException(422, "Invalid LLM configuration; check provider, URL and numeric ranges")
+            await rt.cancel_thinking(aid)
+            b.fallback_active = not b.configured()
+            b.last_error = None
+            rt.next_think_ticks[aid] = rt.sim.tick
+        rt.broadcast_tick()
+        return {"ok": True, "count": len(rt.brains)}
 
     @app.post("/api/llm/test")
-    async def test_llm(patch: ConfigPatch | None = Body(default=None)):
-        return await runtime().brain.test(patch.model_dump(exclude_none=True) if patch else None)
+    async def test_llm(patch: ConfigPatch | None = Body(default=None), agent_id: str | None = Query(default=None)):
+        return await runtime().get_brain(agent_id).test(patch.model_dump(exclude_none=True) if patch else None)
 
     @app.get("/api/llm/models")
-    async def models(provider: Provider | None = Query(default=None), base_url: str | None = Query(default=None)):
+    async def models(
+        provider: Provider | None = Query(default=None),
+        base_url: str | None = Query(default=None),
+        agent_id: str | None = Query(default=None),
+    ):
         try:
-            return await runtime().brain.models(provider=provider, base_url=base_url)
+            return await runtime().get_brain(agent_id).models(provider=provider, base_url=base_url)
         except (ValueError, ValidationError):
             raise HTTPException(422, "Invalid provider or base_url")
 
@@ -186,8 +310,13 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         return await runtime().brain.detect_local()
 
     @app.get("/api/llm/traces")
-    async def traces(limit: int = Query(default=30, ge=1, le=100)):
-        return list(reversed(runtime().brain.traces[-limit:]))
+    async def traces(limit: int = Query(default=30, ge=1, le=100), agent_id: str | None = Query(default=None)):
+        rt = runtime()
+        if agent_id:
+            return list(reversed(rt.get_brain(agent_id).traces[-limit:]))
+        combined = [tr for b in rt.brains.values() for tr in b.traces]
+        combined.sort(key=lambda t: t.get("timestamp", ""))
+        return list(reversed(combined[-limit:]))
 
     @app.post("/api/sim/control")
     async def control(command: Control):
@@ -213,9 +342,9 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
     async def intervene(command: Intervention):
         rt = runtime()
         try:
-            rt.sim.intervene(command.action, command.value)
-        except (ValueError, TypeError):
-            raise HTTPException(422, "Invalid intervention value or unavailable target")
+            rt.sim.intervene(command.action, command.value, agent_id=command.agent_id)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc) or "Invalid intervention value or unavailable target")
         rt.broadcast_tick()
         return rt.sim.snapshot()
 
@@ -224,7 +353,6 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         await ws.accept()
         rt = runtime()
         queue = asyncio.Queue(maxsize=64)
-        # Snapshot and subscription are atomic before the first await of socket I/O.
         rt.sync_status()
         queue.put_nowait(rt.sim.world_init())
         rt.clients.add(queue)
@@ -255,6 +383,3 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
             await asyncio.gather(sender, receiver, return_exceptions=True)
 
     return app
-
-
-app = create_app()

@@ -77,6 +77,29 @@ def test_god_endpoints_and_invalid_values():
         assert client.post('/api/god/intervene',json={'action':'set_time','value':'noon'}).status_code == 422
 
 
+def test_multi_agent_brains_and_management():
+    with TestClient(client_app()) as client:
+        agents = client.get('/api/agents').json()
+        assert len(agents) == 1 and agents[0]['id'] == 'aiden'
+        created = client.post('/api/agents',json={'name':'Elena','role':'farmer','llm_config':{'provider':'custom','base_url':'http://localhost:1234/v1','model':'qwen-farm','enabled':True}})
+        assert created.status_code == 200
+        elena = created.json()
+        assert elena['name'] == 'Elena' and elena['role'] == 'farmer'
+        assert elena['llm_config']['model'] == 'qwen-farm'
+        # Independent per-NPC brain configuration
+        assert client.get('/api/llm/config').json()['provider'] == 'fallback'
+        assert client.get(f"/api/llm/config?agent_id={elena['id']}").json()['model'] == 'qwen-farm'
+        # Targeted whisper & heal
+        assert client.post('/api/god/intervene',json={'action':'whisper','value':'Tend the wheat','agent_id':elena['id']}).status_code == 200
+        state = client.get('/api/state').json()
+        assert len(state['agents']) == 2
+        assert 'Tend the wheat' in state['agents'][1]['thought']
+        # Cannot delete primary NPC Aiden, can delete Elena
+        assert client.delete('/api/agents/aiden').status_code == 422
+        assert client.delete(f"/api/agents/{elena['id']}").status_code == 200
+        assert len(client.get('/api/agents').json()) == 1
+
+
 def test_websocket_initial_ticks_trace_and_reset():
     with TestClient(client_app()) as client:
         with client.websocket_connect('/ws') as ws:

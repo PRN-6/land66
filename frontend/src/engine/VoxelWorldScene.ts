@@ -15,6 +15,7 @@ import {
   type CameraMode,
   type GodTool,
   type InspectTarget,
+  type NpcState,
   type WorldInitMessage,
   type WorldStateSnapshot,
 } from '../types/world';
@@ -55,7 +56,11 @@ export class VoxelWorldScene {
   private treeCanopies: THREE.Object3D[] = [];
   private pondFish: AnimatedPondFish[] = [];
 
-  private npcModel = new NpcModel();
+  private agentsGroup = new THREE.Group();
+  private agentModels = new Map<string, NpcModel>();
+  private selectedAgentId = 'aiden';
+  private lastSnapshot: WorldStateSnapshot | null = null;
+
   private entityManager: EntityManager;
   private atmosphere: AtmosphereSystem;
   private effects: WorldEffects;
@@ -64,7 +69,7 @@ export class VoxelWorldScene {
   private activeTool: GodTool = { mode: 'inspect' };
 
   private cameraMode: CameraMode = 'orbit';
-  private showPath = true;
+  private showPath = false;
   private timeOfDay = 0.35;
   private weather = 'clear';
   private needsRebuild = false;
@@ -125,14 +130,14 @@ export class VoxelWorldScene {
     this.mats = createStylizedMaterials();
 
     this.scene.add(this.worldGroup);
-    this.scene.add(this.npcModel.root);
+    this.agentsGroup.name = 'ai_agents';
+    this.scene.add(this.agentsGroup);
     this.entityManager = new EntityManager(this.scene);
 
     this.atmosphere = new AtmosphereSystem(this.scene);
     this.atmosphere.setWaterNormalMap(this.mats.waterNormalMap);
     this.effects = new WorldEffects(this.scene);
 
-    // Minimalist white hover cursor for placement/erase modes
     this.hoverCursor = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(1.02, 1.02, 1.02)),
       new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75 }),
@@ -150,6 +155,15 @@ export class VoxelWorldScene {
     this.animate();
   }
 
+  private getSelectedModel(): NpcModel | null {
+    return (
+      this.agentModels.get(this.selectedAgentId) ??
+      this.agentModels.get('aiden') ??
+      this.agentModels.values().next().value ??
+      null
+    );
+  }
+
   private handleResize = (): void => {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
@@ -165,6 +179,7 @@ export class VoxelWorldScene {
     clientY: number,
   ): {
     hitKind: 'npc' | 'entity' | 'block';
+    agentId?: string;
     entityId?: string;
     hitCoord?: { x: number; y: number; z: number };
     placeCoord?: { x: number; y: number; z: number };
@@ -176,7 +191,7 @@ export class VoxelWorldScene {
     );
     this.raycaster.setFromCamera(ndc, this.camera);
 
-    const targets: THREE.Object3D[] = [this.npcModel.root, this.entityManager.group];
+    const targets: THREE.Object3D[] = [this.agentsGroup, this.entityManager.group];
     if (this.dioramaRoot) targets.push(this.dioramaRoot);
 
     const hits = this.raycaster.intersectObjects(targets, true);
@@ -184,7 +199,10 @@ export class VoxelWorldScene {
 
     const hit = hits[0];
     if (hit.object.userData.isNpc) {
-      return { hitKind: 'npc' };
+      return {
+        hitKind: 'npc',
+        agentId: String(hit.object.userData.npcAgentId ?? 'aiden'),
+      };
     }
     if (hit.object.userData.entityId) {
       return { hitKind: 'entity', entityId: String(hit.object.userData.entityId) };
@@ -259,7 +277,7 @@ export class VoxelWorldScene {
       return;
     }
     if (res.hitKind === 'npc') {
-      this.callbacks.onSelectTarget({ kind: 'npc' });
+      this.callbacks.onSelectTarget({ kind: 'npc', agentId: res.agentId ?? 'aiden' });
       return;
     }
     if (res.hitKind === 'entity' && res.entityId) {
@@ -290,6 +308,24 @@ export class VoxelWorldScene {
       (this.hoverCursor.material as THREE.LineBasicMaterial).color.setHex(
         tool.mode === 'erase' ? 0xf87171 : 0xffffff,
       );
+    }
+  }
+
+  public setSelectedAgent(agentId: string): void {
+    this.selectedAgentId = agentId;
+    for (const [id, m] of this.agentModels) {
+      m.root.visible = !(this.cameraMode === 'pov' && id === this.selectedAgentId);
+    }
+    const sel = this.getSelectedModel();
+    if (sel) {
+      this.prevNpcPos.copy(sel.root.position);
+      if (this.cameraMode === 'follow') {
+        this.controls.target.set(sel.root.position.x, sel.root.position.y + 1.1, sel.root.position.z);
+        this.camera.position.copy(this.controls.target).add(this.followOffset);
+      }
+    }
+    if (this.lastSnapshot) {
+      this.refreshSelectionEffects(this.lastSnapshot);
     }
   }
 
@@ -332,20 +368,58 @@ export class VoxelWorldScene {
     this.applyState(state, false);
   }
 
+  private refreshSelectionEffects(state: WorldStateSnapshot): void {
+    const list: NpcState[] = state.agents && state.agents.length > 0 ? state.agents : [state.npc];
+    const selected =
+      list.find((a) => (a.id ?? 'aiden') === this.selectedAgentId) ?? list[0];
+    if (selected) {
+      this.effects.setTargetBlock(selected.target_block ?? null);
+      this.effects.setPath(selected.path ?? [], this.showPath);
+    }
+  }
+
   private applyState(state: WorldStateSnapshot, snapNpc: boolean): void {
+    this.lastSnapshot = state;
     this.timeOfDay = state.time_of_day;
     this.weather = state.weather;
 
-    const npc = state.npc;
-    this.npcModel.setTargetState(npc.position, npc.yaw, npc.animation, npc.target_block ?? null);
+    const list: NpcState[] = state.agents && state.agents.length > 0 ? state.agents : [state.npc];
+    const activeIds = new Set<string>();
+
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      const aid = a.id ?? (i === 0 ? 'aiden' : `npc-${i + 1}`);
+      activeIds.add(aid);
+      let model = this.agentModels.get(aid);
+      if (!model) {
+        model = new NpcModel(a.variant ?? i, aid);
+        this.agentsGroup.add(model.root);
+        this.agentModels.set(aid, model);
+        model.setTargetState(a.position, a.yaw, a.animation, a.target_block ?? null);
+        model.snapToTarget();
+      } else {
+        model.setTargetState(a.position, a.yaw, a.animation, a.target_block ?? null);
+        if (snapNpc) {
+          model.snapToTarget();
+        }
+      }
+      model.root.visible = !(this.cameraMode === 'pov' && aid === this.selectedAgentId);
+    }
+
+    for (const [id, model] of this.agentModels) {
+      if (!activeIds.has(id)) {
+        this.agentsGroup.remove(model.root);
+        this.agentModels.delete(id);
+      }
+    }
+
     if (snapNpc) {
-      this.npcModel.snapToTarget();
-      this.prevNpcPos.copy(this.npcModel.root.position);
+      const sel = this.getSelectedModel();
+      if (sel) this.prevNpcPos.copy(sel.root.position);
     }
 
     this.entityManager.sync(state.entities ?? []);
-    this.effects.setTargetBlock(npc.target_block ?? null);
-    this.effects.setPath(npc.path ?? [], this.showPath);
+    this.refreshSelectionEffects(state);
   }
 
   private rebuildMeshes(): void {
@@ -370,17 +444,21 @@ export class VoxelWorldScene {
 
   public setCameraMode(mode: CameraMode): void {
     this.cameraMode = mode;
+    for (const [id, model] of this.agentModels) {
+      model.root.visible = !(mode === 'pov' && id === this.selectedAgentId);
+    }
     if (mode === 'pov') {
       this.controls.enabled = false;
-      this.npcModel.root.visible = false;
       this.hoverCursor.visible = false;
     } else {
       this.controls.enabled = true;
-      this.npcModel.root.visible = true;
       if (mode === 'follow') {
-        const pos = this.npcModel.root.position;
-        this.controls.target.set(pos.x, pos.y + 1.1, pos.z);
-        this.camera.position.copy(this.controls.target).add(this.followOffset);
+        const sel = this.getSelectedModel();
+        if (sel) {
+          const pos = sel.root.position;
+          this.controls.target.set(pos.x, pos.y + 1.1, pos.z);
+          this.camera.position.copy(this.controls.target).add(this.followOffset);
+        }
       }
     }
   }
@@ -393,15 +471,21 @@ export class VoxelWorldScene {
       this.controls.update();
     } else {
       this.setCameraMode('follow');
-      const pos = this.npcModel.root.position;
-      this.controls.target.set(pos.x, pos.y + 1.1, pos.z);
-      this.camera.position.set(pos.x + 6.5, pos.y + 5.2, pos.z + 6.5);
-      this.controls.update();
+      const sel = this.getSelectedModel();
+      if (sel) {
+        const pos = sel.root.position;
+        this.controls.target.set(pos.x, pos.y + 1.1, pos.z);
+        this.camera.position.set(pos.x + 6.5, pos.y + 5.2, pos.z + 6.5);
+        this.controls.update();
+      }
     }
   }
 
   public setShowPath(show: boolean): void {
     this.showPath = show;
+    if (this.lastSnapshot) {
+      this.refreshSelectionEffects(this.lastSnapshot);
+    }
   }
 
   private animate = (): void => {
@@ -414,17 +498,18 @@ export class VoxelWorldScene {
       this.needsRebuild = false;
     }
 
-    this.npcModel.update(dt);
-    this.entityManager.update(dt);
-
-    if (this.npcModel.isWatering()) {
-      this.waterEmitAccum += dt;
-      if (this.waterEmitAccum >= 0.14) {
-        this.waterEmitAccum = 0;
-        this.npcModel.getWaterSpoutWorldPos(this.spoutVec);
-        this.effects.spawnWaterDroplets(this.spoutVec, 2);
+    for (const model of this.agentModels.values()) {
+      model.update(dt);
+      if (model.isWatering()) {
+        this.waterEmitAccum += dt;
+        if (this.waterEmitAccum >= 0.14) {
+          this.waterEmitAccum = 0;
+          model.getWaterSpoutWorldPos(this.spoutVec);
+          this.effects.spawnWaterDroplets(this.spoutVec, 2);
+        }
       }
     }
+    this.entityManager.update(dt);
 
     this.atmosphere.update(dt, this.elapsed, this.timeOfDay, this.weather, this.scene);
     this.effects.update(dt, this.elapsed);
@@ -445,37 +530,42 @@ export class VoxelWorldScene {
       f.mesh.rotation.y = -ang;
     }
 
-    const npcPos = this.npcModel.root.position;
-    if (this.cameraMode === 'pov') {
-      this.npcModel.getHeadWorldPosition(this.headVec);
-      this.npcModel.getForwardLookTarget(10, this.lookVec);
-      this.camera.position.copy(this.headVec);
-      this.camera.lookAt(this.lookVec);
-    } else {
-      if (this.cameraMode === 'follow') {
-        const deltaX = npcPos.x - this.prevNpcPos.x;
-        const deltaY = npcPos.y - this.prevNpcPos.y;
-        const deltaZ = npcPos.z - this.prevNpcPos.z;
-        this.controls.target.set(npcPos.x, npcPos.y + 1.1, npcPos.z);
-        this.camera.position.x += deltaX;
-        this.camera.position.y += deltaY;
-        this.camera.position.z += deltaZ;
-      }
-      this.controls.update();
-    }
-    this.prevNpcPos.copy(npcPos);
-
-    if (this.callbacks.onNpcScreenPos) {
+    const sel = this.getSelectedModel();
+    if (sel) {
+      const npcPos = sel.root.position;
       if (this.cameraMode === 'pov') {
-        this.callbacks.onNpcScreenPos({ x: 0, y: 0, visible: false });
+        sel.getHeadWorldPosition(this.headVec);
+        sel.getForwardLookTarget(10, this.lookVec);
+        this.camera.position.copy(this.headVec);
+        this.camera.lookAt(this.lookVec);
       } else {
-        this.projVec.set(npcPos.x, npcPos.y + 2.2, npcPos.z);
-        this.projVec.project(this.camera);
-        const visible = this.projVec.z >= -1 && this.projVec.z <= 1;
-        const x = (this.projVec.x * 0.5 + 0.5) * this.container.clientWidth;
-        const y = (-this.projVec.y * 0.5 + 0.5) * this.container.clientHeight;
-        this.callbacks.onNpcScreenPos({ x, y, visible });
+        if (this.cameraMode === 'follow') {
+          const deltaX = npcPos.x - this.prevNpcPos.x;
+          const deltaY = npcPos.y - this.prevNpcPos.y;
+          const deltaZ = npcPos.z - this.prevNpcPos.z;
+          this.controls.target.set(npcPos.x, npcPos.y + 1.1, npcPos.z);
+          this.camera.position.x += deltaX;
+          this.camera.position.y += deltaY;
+          this.camera.position.z += deltaZ;
+        }
+        this.controls.update();
       }
+      this.prevNpcPos.copy(npcPos);
+
+      if (this.callbacks.onNpcScreenPos) {
+        if (this.cameraMode === 'pov') {
+          this.callbacks.onNpcScreenPos({ x: 0, y: 0, visible: false });
+        } else {
+          this.projVec.set(npcPos.x, npcPos.y + 2.2, npcPos.z);
+          this.projVec.project(this.camera);
+          const visible = this.projVec.z >= -1 && this.projVec.z <= 1;
+          const x = (this.projVec.x * 0.5 + 0.5) * this.container.clientWidth;
+          const y = (-this.projVec.y * 0.5 + 0.5) * this.container.clientHeight;
+          this.callbacks.onNpcScreenPos({ x, y, visible });
+        }
+      }
+    } else {
+      this.controls.update();
     }
 
     this.composer.render();

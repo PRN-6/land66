@@ -1,9 +1,15 @@
 import { useState } from 'react';
-import type { MemoryItem, WorldStateSnapshot } from '../types/world';
+import { Brain, Trash2 } from 'lucide-react';
+import type { MemoryItem, NpcState, WorldStateSnapshot } from '../types/world';
 
 interface InspectorDrawerProps {
   state: WorldStateSnapshot;
+  agents: NpcState[];
+  selectedAgentId: string;
   open: boolean;
+  onSelectAgent: (agentId: string) => void;
+  onOpenBrainForAgent: (agentId: string) => void;
+  onDeleteAgent: (agentId: string) => void;
 }
 
 function formatEntry(entry: MemoryItem | string): { tag: string; text: string } {
@@ -32,30 +38,89 @@ function Meter({ label, value }: { label: string; value: number }) {
   );
 }
 
-export function InspectorDrawer({ state, open }: InspectorDrawerProps) {
+export function InspectorDrawer({
+  state,
+  agents,
+  selectedAgentId,
+  open,
+  onSelectAgent,
+  onOpenBrainForAgent,
+  onDeleteAgent,
+}: InspectorDrawerProps) {
   const [tab, setTab] = useState<'mind' | 'vitals' | 'world'>('mind');
   const [logMode, setLogMode] = useState<'memories' | 'journal'>('memories');
 
   if (!open) return null;
 
-  const { npc, stats } = state;
+  const npc =
+    agents.find((a, idx) => (a.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`)) === selectedAgentId) ??
+    agents[0] ??
+    state.npc;
+  const activeId = npc.id ?? selectedAgentId;
+  const llm = npc.llm_status ?? state.llm_status;
   const logs = logMode === 'memories' ? npc.memories : npc.journal;
   const creatures = state.entities ?? [];
+  const { stats } = state;
 
   return (
     <aside className="pointer-events-auto fixed top-16 right-3 bottom-16 z-20 w-72 max-w-[calc(100vw-1.5rem)] flex flex-col rounded-2xl bg-neutral-950/75 backdrop-blur-xl border border-white/10 shadow-2xl overflow-hidden">
-      {/* Header + Minimal Tabs */}
+      {/* Header + Agent Switcher */}
       <div className="px-3 pt-3 pb-2 border-b border-white/10 space-y-2.5">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-xs font-semibold text-white">{npc.name}</div>
-            <div className="text-[10px] font-mono text-neutral-400">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            {agents.length > 1 ? (
+              <select
+                value={activeId}
+                onChange={(e) => onSelectAgent(e.target.value)}
+                className="w-full px-2 py-1 rounded-lg bg-neutral-900 border border-white/10 text-xs font-semibold text-white"
+              >
+                {agents.map((a, i) => {
+                  const id = a.id ?? (i === 0 ? 'aiden' : `npc-${i + 1}`);
+                  return (
+                    <option key={id} value={id}>
+                      {a.name} ({a.role ?? 'pioneer'})
+                    </option>
+                  );
+                })}
+              </select>
+            ) : (
+              <div className="text-xs font-semibold text-white truncate">
+                {npc.name}{' '}
+                <span className="font-normal text-neutral-400 capitalize">({npc.role ?? 'pioneer'})</span>
+              </div>
+            )}
+            <div className="text-[10px] font-mono text-neutral-400 mt-1">
               ({npc.grid_pos.x}, {npc.grid_pos.y}, {npc.grid_pos.z}) · {npc.animation}
             </div>
           </div>
-          <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] text-neutral-300">
-            {npc.perception.sheltered ? 'Indoors' : 'Outdoors'}
+
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => onOpenBrainForAgent(activeId)}
+              title={`Manage ${npc.name}'s Brain`}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white/10 hover:bg-white hover:text-neutral-950 text-[10px] text-neutral-200 transition cursor-pointer"
+            >
+              <Brain className="w-3 h-3" />
+              <span>Brain</span>
+            </button>
+            {activeId !== 'aiden' && (
+              <button
+                onClick={() => onDeleteAgent(activeId)}
+                title={`Remove ${npc.name}`}
+                className="p-1 rounded-lg text-neutral-500 hover:text-white hover:bg-white/10 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between text-[10px] text-neutral-400 font-mono">
+          <span className="truncate">
+            Brain: {llm.provider}
+            {llm.model ? `/${llm.model}` : ''}
           </span>
+          <span>{npc.perception.sheltered ? 'Indoors' : 'Outdoors'}</span>
         </div>
 
         <div className="grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-neutral-900/90 border border-white/5 text-[11px]">
@@ -80,7 +145,7 @@ export function InspectorDrawer({ state, open }: InspectorDrawerProps) {
             <div className="p-2.5 rounded-xl bg-neutral-900/70 border border-white/5 space-y-1">
               <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-neutral-500">
                 <span>Thought</span>
-                {state.llm_status.thinking && <span className="text-neutral-300 animate-pulse">Thinking</span>}
+                {llm.thinking && <span className="text-neutral-300 animate-pulse">Thinking</span>}
               </div>
               <p className="text-xs text-neutral-100 leading-relaxed">“{npc.thought}”</p>
             </div>
@@ -212,16 +277,18 @@ export function InspectorDrawer({ state, open }: InspectorDrawerProps) {
 
             <div className="p-2.5 rounded-xl bg-neutral-900/70 border border-white/5 space-y-1.5 text-[11px]">
               <div className="flex justify-between">
+                <span className="text-neutral-400">AI NPCs</span>
+                <span className="font-mono text-neutral-200">{agents.length}</span>
+              </div>
+              <div className="flex justify-between">
                 <span className="text-neutral-400">Trees</span>
                 <span className="font-mono text-neutral-200">{stats.trees_count}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-neutral-400">Blocks Placed</span>
-                <span className="font-mono text-neutral-200">{stats.blocks_placed}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-neutral-400">Blocks Broken</span>
-                <span className="font-mono text-neutral-200">{stats.blocks_broken}</span>
+                <span className="text-neutral-400">Placed / Broken</span>
+                <span className="font-mono text-neutral-200">
+                  {stats.blocks_placed} / {stats.blocks_broken}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-neutral-400">Seed / Tick</span>
@@ -233,7 +300,7 @@ export function InspectorDrawer({ state, open }: InspectorDrawerProps) {
 
             <div className="p-2.5 rounded-xl bg-neutral-900/70 border border-white/5 space-y-1.5">
               <div className="text-[10px] uppercase tracking-wider text-neutral-500">
-                Characters & Animals ({creatures.length})
+                Animals & Villagers ({creatures.length})
               </div>
               {creatures.length === 0 ? (
                 <div className="text-[11px] text-neutral-500">None spawned yet.</div>

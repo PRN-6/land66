@@ -1,14 +1,27 @@
 import { Box, User, Users, X } from 'lucide-react';
-import { BLOCK_LABELS, BlockId, type InspectTarget, type WorldStateSnapshot } from '../types/world';
+import {
+  BLOCK_LABELS,
+  BlockId,
+  type InspectTarget,
+  type NpcState,
+  type WorldStateSnapshot,
+} from '../types/world';
 
 interface InspectToastProps {
   target: InspectTarget | null;
   state: WorldStateSnapshot;
+  agents: NpcState[];
   onClose: () => void;
 }
 
-export function InspectToast({ target, state, onClose }: InspectToastProps) {
+export function InspectToast({ target, state, agents, onClose }: InspectToastProps) {
   if (!target) return null;
+
+  const targetNpc =
+    target.kind === 'npc'
+      ? (agents.find((a, idx) => (a.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`)) === (target.agentId ?? 'aiden')) ??
+        state.npc)
+      : null;
 
   return (
     <div className="pointer-events-auto fixed bottom-16 left-1/2 -translate-x-1/2 z-30 w-72 max-w-[calc(100vw-2rem)] p-3 rounded-2xl bg-neutral-950/88 backdrop-blur-xl border border-white/10 shadow-2xl">
@@ -24,10 +37,15 @@ export function InspectToast({ target, state, onClose }: InspectToastProps) {
             )}
           </div>
           <div>
-            {target.kind === 'npc' ? (
+            {target.kind === 'npc' && targetNpc ? (
               <>
-                <div className="text-xs font-semibold text-white">{state.npc.name}</div>
-                <div className="text-[11px] text-neutral-400 font-mono">{state.npc.current_action}</div>
+                <div className="text-xs font-semibold text-white">
+                  {targetNpc.name}{' '}
+                  <span className="text-neutral-400 font-normal capitalize">
+                    ({targetNpc.role ?? 'pioneer'})
+                  </span>
+                </div>
+                <div className="text-[11px] text-neutral-400 font-mono">{targetNpc.current_action}</div>
               </>
             ) : target.kind === 'entity' ? (
               <>
@@ -40,7 +58,7 @@ export function InspectToast({ target, state, onClose }: InspectToastProps) {
                   {target.entity.animation}
                 </div>
               </>
-            ) : (
+            ) : target.kind === 'block' ? (
               <>
                 <div className="text-xs font-semibold text-white">
                   {BLOCK_LABELS[target.block] ?? `Block #${target.block}`}
@@ -49,7 +67,7 @@ export function InspectToast({ target, state, onClose }: InspectToastProps) {
                   ({target.x}, {target.y}, {target.z})
                 </div>
               </>
-            )}
+            ) : null}
           </div>
         </div>
         <button onClick={onClose} className="p-1 rounded-lg text-neutral-500 hover:text-white cursor-pointer">
@@ -73,9 +91,9 @@ export function InspectToast({ target, state, onClose }: InspectToastProps) {
         </div>
       )}
 
-      {target.kind === 'npc' && (
+      {target.kind === 'npc' && targetNpc && (
         <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-neutral-300 line-clamp-2">
-          “{state.npc.thought}”
+          “{targetNpc.thought}”
         </div>
       )}
     </div>

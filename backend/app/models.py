@@ -93,3 +93,14 @@ class Intervention(BaseModel):
         "clear_entities",
     ]
     value: Any = None
+    agent_id: str | None = None
+
+
+class CreateAgentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, max_length=32)
+    role: Literal["pioneer", "builder", "farmer", "forager", "explorer"] = "companion" if False else "pioneer"
+    x: int | None = None
+    y: int | None = None
+    z: int | None = None
+    llm_config: ConfigPatch | None = None

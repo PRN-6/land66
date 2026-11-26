@@ -5,10 +5,13 @@ import {
   WORLD_VOLUME,
   WORLD_WIDTH,
   blockIndex,
+  type AgentRole,
   type BlockUpdate,
   type DayPhase,
   type EntityKind,
+  type LlmConfig,
   type LlmTrace,
+  type NpcState,
   type SimSpeed,
   type WeatherType,
   type WorldEntity,
@@ -110,6 +113,17 @@ interface DemoEntity extends WorldEntity {
   wait: number;
 }
 
+interface DemoAgent extends NpcState {
+  id: string;
+  role: string;
+  variant: number;
+  target: [number, number, number] | null;
+  wait: number;
+  llmConfig: LlmConfig;
+}
+
+const AGENT_NAMES = ['Elena', 'Rowan', 'Maya', 'Soren', 'Clara', 'Leo', 'Nora'];
+
 export class OfflineDemoSimulator {
   private blocks = new Uint8Array(WORLD_VOLUME);
   private blockMeta = new Uint8Array(WORLD_VOLUME);
@@ -122,7 +136,9 @@ export class OfflineDemoSimulator {
   private buildQueue: Array<{ x: number; y: number; z: number; block: number; meta?: number }> = [];
   private farmQueue: Array<{ x: number; y: number; z: number }> = [];
   private demoEntities: DemoEntity[] = [];
+  private extraAgents: DemoAgent[] = [];
   private entityCounter = 0;
+  private agentCounter = 1;
   private traceCounter = 0;
 
   constructor(seed = 6601) {
@@ -142,7 +158,10 @@ export class OfflineDemoSimulator {
       speed: 1,
       seed,
       npc: {
+        id: 'aiden',
         name: 'Aiden',
+        role: 'pioneer',
+        variant: 0,
         position: { x: 15.5, y: 12, z: 15.5 },
         grid_pos: { x: 15, y: 12, z: 15 },
         yaw: 0.4,
@@ -223,15 +242,90 @@ export class OfflineDemoSimulator {
   public getState(): WorldStateSnapshot {
     this.state.entities = this.demoEntities.map(({ target: _t, wait: _w, ...rest }) => rest);
     this.state.stats.entities_count = this.demoEntities.length;
+    const primaryAgent: NpcState = {
+      ...this.state.npc,
+      id: 'aiden',
+      role: 'pioneer',
+      variant: 0,
+      llm_status: this.state.llm_status,
+    };
+    const extras: NpcState[] = this.extraAgents.map(
+      ({ target: _t, wait: _w, llmConfig: _cfg, ...rest }) => rest,
+    );
+    this.state.agents = [primaryAgent, ...extras];
+    this.state.stats.agents_count = this.state.agents.length;
     return structuredClone(this.state);
   }
 
   public reset(seed = Math.floor(Math.random() * 9000) + 1000): WorldInitMessage {
     this.state = this.createInitialState(seed);
     this.demoEntities = [];
+    this.extraAgents = [];
     this.entityCounter = 0;
+    this.agentCounter = 1;
     this.generateIsland(seed);
     return this.getInitMessage();
+  }
+
+  public addAgent(opts: { name?: string; role?: AgentRole; x?: number; y?: number; z?: number }): NpcState {
+    this.agentCounter += 1;
+    const id = `npc-${this.agentCounter}`;
+    const role = opts.role ?? 'pioneer';
+    const name = (opts.name ?? '').trim() || AGENT_NAMES[(this.agentCounter - 2) % AGENT_NAMES.length];
+    const ax = opts.x ?? Math.max(5, Math.min(26, this.state.npc.grid_pos.x + 2));
+    const az = opts.z ?? Math.max(5, Math.min(26, this.state.npc.grid_pos.z + 1));
+    const ay = opts.y ?? Math.max(10, this.surfaceTopAt(ax, az) + 1);
+    const ag: DemoAgent = {
+      id,
+      name,
+      role,
+      variant: this.agentCounter - 1,
+      position: { x: ax, y: ay, z: az },
+      grid_pos: { x: ax, y: ay, z: az },
+      yaw: this.rng() * Math.PI * 2,
+      animation: 'idle',
+      action_progress: 0,
+      current_action: 'explore',
+      current_goal: `Assist the island as ${role}`,
+      thought: `Joined the island as ${name} (${role}). Ready to work alongside Aiden.`,
+      needs: { hunger: 90, energy: 95, thirst: 90, health: 100, mood: 85 },
+      inventory: { wood_log: 0, wood_plank: 0, stone: 0, seeds: 1, wheat: 0, berries: 1, sapling: 0, bread: 0 },
+      target_block: null,
+      path: [],
+      perception: {
+        location_label: 'Island Clearing',
+        sheltered: false,
+        visible_summary: 'Exploring the floating island.',
+        nearby_entities: [],
+      },
+      memories: [{ day: this.state.day, clock: this.state.clock_str, text: `Arrived on the island as ${role}.` }],
+      journal: [],
+      llm_status: {
+        provider: 'fallback',
+        model: 'offline-demo-sim',
+        thinking: false,
+        last_latency_ms: 8,
+        calls_count: 1,
+        fallback_active: true,
+        last_error: null,
+      },
+      target: null,
+      wait: 0.8,
+      llmConfig: {
+        provider: 'fallback',
+        model: 'offline-demo-sim',
+        base_url: '',
+        temperature: 0.7,
+        decision_interval_ticks: 25,
+        enabled: false,
+      },
+    };
+    this.extraAgents.push(ag);
+    return ag;
+  }
+
+  public removeAgent(agentId: string): void {
+    this.extraAgents = this.extraAgents.filter((a) => a.id !== agentId);
   }
 
   private setBlock(x: number, y: number, z: number, block: number, meta = 0): void {
@@ -535,6 +629,7 @@ export class OfflineDemoSimulator {
     }
 
     this.updateEntities(simDt);
+    this.updateExtraAgents(simDt);
 
     if (this.state.tick % 20 === 0) {
       let ripe = 0;
@@ -630,6 +725,71 @@ export class OfflineDemoSimulator {
         ent.position.y += (dy / dist) * step;
         ent.position.z += (dz / dist) * step;
         ent.animation = 'walking';
+      }
+    }
+  }
+
+  private updateExtraAgents(dt: number): void {
+    const roleActions: Record<string, { anim: string; act: string; thought: string }> = {
+      builder: { anim: 'chopping', act: 'chop', thought: 'Gathering timber and stone for island structures.' },
+      farmer: { anim: 'watering', act: 'water', thought: 'Tending crops beside the pond.' },
+      forager: { anim: 'harvesting', act: 'forage', thought: 'Checking berry bushes and saplings.' },
+      explorer: { anim: 'thinking', act: 'explore', thought: 'Observing the sky horizon and island edges.' },
+      pioneer: { anim: 'idle', act: 'explore', thought: 'Helping settle the floating island.' },
+    };
+
+    for (const ag of this.extraAgents) {
+      if (!ag.target) {
+        ag.wait = Math.max(0, ag.wait - dt);
+        if (ag.wait <= 0) {
+          const candidates: [number, number, number][] = [];
+          for (const [dx, dz] of [
+            [2, 0],
+            [-2, 0],
+            [0, 2],
+            [0, -2],
+            [1, 2],
+            [-1, -2],
+          ]) {
+            const nx = ag.grid_pos.x + dx;
+            const nz = ag.grid_pos.z + dz;
+            if (nx < 5 || nx >= WORLD_WIDTH - 5 || nz < 5 || nz >= WORLD_DEPTH - 5) continue;
+            const sy = this.surfaceY[nz * WORLD_WIDTH + nx];
+            if (sy > 0) candidates.push([nx, sy + 1, nz]);
+          }
+          if (candidates.length > 0) {
+            ag.target = candidates[Math.floor(this.rng() * candidates.length)];
+            ag.animation = 'walking';
+            ag.current_action = 'walk';
+          } else {
+            ag.wait = 1.4;
+          }
+        } else {
+          const rInfo = roleActions[ag.role] ?? roleActions.pioneer;
+          ag.animation = rInfo.anim;
+          ag.current_action = rInfo.act;
+          ag.thought = rInfo.thought;
+        }
+        continue;
+      }
+
+      const [tx, ty, tz] = ag.target;
+      const dx = tx - ag.position.x;
+      const dy = ty - ag.position.y;
+      const dz = tz - ag.position.z;
+      const dist = Math.hypot(dx, dy, dz);
+      const step = 2.0 * dt;
+      if (dist > 0.01) ag.yaw = Math.atan2(dx, dz);
+      if (dist <= step) {
+        ag.position = { x: tx, y: ty, z: tz };
+        ag.grid_pos = { x: tx, y: ty, z: tz };
+        ag.target = null;
+        ag.wait = 1.4 + this.rng() * 2.2;
+      } else {
+        ag.position.x += (dx / dist) * step;
+        ag.position.y += (dy / dist) * step;
+        ag.position.z += (dz / dist) * step;
+        ag.animation = 'walking';
       }
     }
   }
@@ -749,8 +909,12 @@ export class OfflineDemoSimulator {
     return null;
   }
 
-  public handleGodIntervene(action: string, value?: unknown): BlockUpdate[] {
+  public handleGodIntervene(action: string, value?: unknown, agentId?: string): BlockUpdate[] {
     const updates: BlockUpdate[] = [];
+    const targetAgent =
+      agentId && agentId !== 'aiden' && agentId !== 'all'
+        ? this.extraAgents.find((a) => a.id === agentId)
+        : null;
     if (action === 'set_time') {
       const map: Record<string, number> = { dawn: 0.25, noon: 0.5, dusk: 0.76, night: 0.92 };
       const t = typeof value === 'number' ? value : (map[String(value)] ?? 0.5);
@@ -760,24 +924,41 @@ export class OfflineDemoSimulator {
     } else if (action === 'set_weather' && typeof value === 'string') {
       this.state.weather = value as WeatherType;
     } else if (action === 'whisper' && typeof value === 'string' && value.trim()) {
-      this.state.npc.thought = `I heard a whisper: "${value.trim()}"`;
-      this.state.npc.memories.unshift({
-        day: this.state.day,
-        clock: this.state.clock_str,
-        text: `Felt an inspiration: "${value.trim()}"`,
-      });
-      this.state.npc.memories = this.state.npc.memories.slice(0, 15);
+      const msg = value.trim();
+      if (agentId === 'all') {
+        this.state.npc.thought = `I heard a whisper: "${msg}"`;
+        for (const ag of this.extraAgents) ag.thought = `I heard a whisper: "${msg}"`;
+      } else if (targetAgent) {
+        targetAgent.thought = `I heard a whisper: "${msg}"`;
+        targetAgent.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: `Whisper: "${msg}"` });
+      } else {
+        this.state.npc.thought = `I heard a whisper: "${msg}"`;
+        this.state.npc.memories.unshift({
+          day: this.state.day,
+          clock: this.state.clock_str,
+          text: `Felt an inspiration: "${msg}"`,
+        });
+        this.state.npc.memories = this.state.npc.memories.slice(0, 15);
+      }
     } else if (action === 'heal_npc') {
-      this.state.npc.needs = { hunger: 100, energy: 100, thirst: 100, health: 100, mood: 100 };
+      if (agentId === 'all') {
+        this.state.npc.needs = { hunger: 100, energy: 100, thirst: 100, health: 100, mood: 100 };
+        for (const ag of this.extraAgents) ag.needs = { hunger: 100, energy: 100, thirst: 100, health: 100, mood: 100 };
+      } else if (targetAgent) {
+        targetAgent.needs = { hunger: 100, energy: 100, thirst: 100, health: 100, mood: 100 };
+      } else {
+        this.state.npc.needs = { hunger: 100, energy: 100, thirst: 100, health: 100, mood: 100 };
+      }
     } else if (action === 'drop_gift' && typeof value === 'object' && value !== null) {
+      const inv = targetAgent ? targetAgent.inventory : this.state.npc.inventory;
       const gift = value as Record<string, unknown>;
       if (typeof gift.item === 'string') {
         const amt = Number(gift.amount ?? 1);
-        this.state.npc.inventory[gift.item] = (this.state.npc.inventory[gift.item] ?? 0) + amt;
+        inv[gift.item] = (inv[gift.item] ?? 0) + amt;
       } else {
         for (const [k, v] of Object.entries(gift)) {
           if (typeof v === 'number') {
-            this.state.npc.inventory[k] = (this.state.npc.inventory[k] ?? 0) + v;
+            inv[k] = (inv[k] ?? 0) + v;
           }
         }
       }

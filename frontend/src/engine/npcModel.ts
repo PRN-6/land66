@@ -11,7 +11,15 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
+const NPC_VARIANTS = [
+  { tunic: 0x3b8c82, scarf: 0xd96b52, hair: 0x4c3226, hat: 0xd9b37c, hatBand: 0xc2594b },
+  { tunic: 0x8f5b4a, scarf: 0xe3b261, hair: 0x27272a, hat: 0x8f6f4e, hatBand: 0x3b6e6c },
+  { tunic: 0x4b5c78, scarf: 0xd4a373, hair: 0x6d452a, hat: 0x4a5568, hatBand: 0xc87d55 },
+  { tunic: 0x687b59, scarf: 0xc97b63, hair: 0x3b261d, hat: 0xc7a778, hatBand: 0x526b4e },
+];
+
 export class NpcModel {
+  public readonly agentId: string;
   public readonly root = new THREE.Group();
   public readonly bodyPivot = new THREE.Group();
   public readonly headGroup = new THREE.Group();
@@ -41,20 +49,22 @@ export class NpcModel {
   private currentToolKind = 'none';
   private toolMeshes: Record<string, THREE.Object3D> = {};
 
-  constructor() {
-    this.root.name = 'npc_aiden';
+  constructor(variant = 0, agentId = 'aiden') {
+    this.agentId = agentId;
+    const palette = NPC_VARIANTS[Math.abs(variant) % NPC_VARIANTS.length];
+    this.root.name = `npc_${agentId}`;
     this.root.add(this.bodyPivot);
 
     // Soft matte-satin stylized clay materials
     const skinMat = new THREE.MeshStandardMaterial({ color: 0xf7cbb0, roughness: 0.68 });
     const blushMat = new THREE.MeshStandardMaterial({ color: 0xf4978e, roughness: 0.72 });
-    const hairMat = new THREE.MeshStandardMaterial({ color: 0x4c3226, roughness: 0.78 });
-    const hatMat = new THREE.MeshStandardMaterial({ color: 0xd9b37c, roughness: 0.8 });
-    const hatBandMat = new THREE.MeshStandardMaterial({ color: 0xc2594b, roughness: 0.75 });
+    const hairMat = new THREE.MeshStandardMaterial({ color: palette.hair, roughness: 0.78 });
+    const hatMat = new THREE.MeshStandardMaterial({ color: palette.hat, roughness: 0.8 });
+    const hatBandMat = new THREE.MeshStandardMaterial({ color: palette.hatBand, roughness: 0.75 });
     const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.18 });
     const eyeShineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const tunicMat = new THREE.MeshStandardMaterial({ color: 0x3b8c82, roughness: 0.74 });
-    const scarfMat = new THREE.MeshStandardMaterial({ color: 0xd96b52, roughness: 0.78 });
+    const tunicMat = new THREE.MeshStandardMaterial({ color: palette.tunic, roughness: 0.74 });
+    const scarfMat = new THREE.MeshStandardMaterial({ color: palette.scarf, roughness: 0.78 });
     const leatherMat = new THREE.MeshStandardMaterial({ color: 0x6f472c, roughness: 0.8 });
     const brassMat = new THREE.MeshStandardMaterial({ color: 0xf6c957, metalness: 0.7, roughness: 0.25 });
     const packMat = new THREE.MeshStandardMaterial({ color: 0x8f623e, roughness: 0.82 });
@@ -245,6 +255,7 @@ export class NpcModel {
 
     this.root.traverse((obj) => {
       obj.userData.isNpc = true;
+      obj.userData.npcAgentId = this.agentId;
     });
 
     this.initTools();
@@ -308,6 +319,7 @@ export class NpcModel {
       mesh.visible = false;
       mesh.traverse((o) => {
         o.userData.isNpc = true;
+        o.userData.npcAgentId = this.agentId;
       });
       this.heldToolGroup.add(mesh);
     }

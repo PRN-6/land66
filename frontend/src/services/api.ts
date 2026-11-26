@@ -1,8 +1,10 @@
 import type {
+  AgentRole,
   DetectLocalLlmResponse,
   LlmConfig,
   LlmTestResponse,
   LlmTrace,
+  NpcState,
   SimSpeed,
   WorldStateSnapshot,
 } from '../types/world';
@@ -89,6 +91,7 @@ export const backendApi = {
       | 'spawn_entity'
       | 'clear_entities';
     value?: unknown;
+    agent_id?: string;
   }): Promise<{ ok?: boolean; message?: string; state?: WorldStateSnapshot }> {
     return requestJson('/api/god/intervene', {
       method: 'POST',
@@ -96,21 +99,55 @@ export const backendApi = {
     });
   },
 
-  getLlmConfig(): Promise<LlmConfig> {
-    return requestJson('/api/llm/config');
+  listAgents(): Promise<Array<NpcState & { llm_config?: LlmConfig }>> {
+    return requestJson('/api/agents');
   },
 
-  updateLlmConfig(config: Partial<LlmConfig>): Promise<LlmConfig> {
-    return requestJson('/api/llm/config', {
+  createAgent(payload: {
+    name?: string;
+    role?: AgentRole;
+    x?: number;
+    y?: number;
+    z?: number;
+    llm_config?: Partial<LlmConfig>;
+  }): Promise<NpcState & { llm_config?: LlmConfig }> {
+    return requestJson('/api/agents', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  deleteAgent(agentId: string): Promise<{ ok: boolean; removed: string }> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  getLlmConfig(agentId?: string): Promise<LlmConfig> {
+    const qs = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+    return requestJson(`/api/llm/config${qs}`);
+  },
+
+  updateLlmConfig(config: Partial<LlmConfig>, agentId?: string): Promise<LlmConfig> {
+    const qs = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+    return requestJson(`/api/llm/config${qs}`, {
       method: 'POST',
       body: JSON.stringify(config),
     });
   },
 
-  getLlmModels(provider?: string, baseUrl?: string): Promise<{ models: string[] }> {
+  applyLlmToAll(config: Partial<LlmConfig>): Promise<{ ok: boolean; count: number }> {
+    return requestJson('/api/llm/apply_all', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+  },
+
+  getLlmModels(provider?: string, baseUrl?: string, agentId?: string): Promise<{ models: string[] }> {
     const params = new URLSearchParams();
     if (provider) params.set('provider', provider);
     if (baseUrl) params.set('base_url', baseUrl);
+    if (agentId) params.set('agent_id', agentId);
     const qs = params.toString();
     return requestJson(`/api/llm/models${qs ? `?${qs}` : ''}`).then((res: unknown) => {
       if (Array.isArray(res)) {
@@ -121,9 +158,10 @@ export const backendApi = {
     });
   },
 
-  testLlmConnection(override?: Partial<LlmConfig>): Promise<LlmTestResponse> {
+  testLlmConnection(override?: Partial<LlmConfig>, agentId?: string): Promise<LlmTestResponse> {
+    const qs = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
     return requestJson(
-      '/api/llm/test',
+      `/api/llm/test${qs}`,
       {
         method: 'POST',
         body: JSON.stringify(override ?? {}),
@@ -136,8 +174,10 @@ export const backendApi = {
     return requestJson('/api/llm/detect');
   },
 
-  getLlmTraces(limit = 30): Promise<LlmTrace[]> {
-    return requestJson<LlmTrace[] | { traces: LlmTrace[] }>(`/api/llm/traces?limit=${limit}`).then(
+  getLlmTraces(limit = 30, agentId?: string): Promise<LlmTrace[]> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (agentId) params.set('agent_id', agentId);
+    return requestJson<LlmTrace[] | { traces: LlmTrace[] }>(`/api/llm/traces?${params.toString()}`).then(
       (res) => (Array.isArray(res) ? res : (res?.traces ?? [])),
     );
   },

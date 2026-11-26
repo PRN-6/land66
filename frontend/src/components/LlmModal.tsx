@@ -20,12 +20,16 @@ import type {
   LlmConfig,
   LlmTestResponse,
   LlmTrace,
+  NpcState,
 } from '../types/world';
 
 interface LlmModalProps {
   open: boolean;
   connectionMode: ConnectionMode;
+  agents: NpcState[];
+  activeAgentId: string;
   traces: LlmTrace[];
+  onSelectAgentId: (agentId: string) => void;
   onClose: () => void;
   onTracesUpdated: (traces: LlmTrace[]) => void;
 }
@@ -44,8 +48,18 @@ const PROVIDER_DEFAULTS: Record<string, { baseUrl: string; defaultModel: string;
   fallback: { baseUrl: '', defaultModel: 'rule-based', isLocal: true },
 };
 
-export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdated }: LlmModalProps) {
+export function LlmModal({
+  open,
+  connectionMode,
+  agents,
+  activeAgentId,
+  traces,
+  onSelectAgentId,
+  onClose,
+  onTracesUpdated,
+}: LlmModalProps) {
   const [tab, setTab] = useState<'config' | 'traces'>('config');
+  const [traceScope, setTraceScope] = useState<'agent' | 'all'>('agent');
   const [config, setConfig] = useState<LlmConfig>({
     provider: 'ollama',
     model: 'llama3.2',
@@ -53,7 +67,7 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
     has_api_key: false,
     api_key: '',
     temperature: 0.7,
-    decision_interval_ticks: 25,
+    decision_interval_ticks: 100,
     enabled: true,
   });
   const [models, setModels] = useState<string[]>([]);
@@ -66,6 +80,10 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
   const [testResult, setTestResult] = useState<LlmTestResponse | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
+
+  const activeAgent =
+    agents.find((a, idx) => (a.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`)) === activeAgentId) ??
+    agents[0];
 
   const scanLocalModels = async () => {
     setScanningLocal(true);
@@ -83,8 +101,10 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
 
   useEffect(() => {
     if (!open || connectionMode !== 'live') return;
+    setTestResult(null);
+    setStatusMsg(null);
     backendApi
-      .getLlmConfig()
+      .getLlmConfig(activeAgentId)
       .then((cfg) => {
         setConfig((prev) => ({
           ...prev,
@@ -94,13 +114,13 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
       })
       .catch(() => {});
     backendApi
-      .getLlmTraces(30)
+      .getLlmTraces(40)
       .then((list) => {
         if (list.length > 0) onTracesUpdated(list);
       })
       .catch(() => {});
     scanLocalModels();
-  }, [open, connectionMode, onTracesUpdated]);
+  }, [open, connectionMode, activeAgentId, onTracesUpdated]);
 
   if (!open) return null;
 
@@ -113,6 +133,7 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
       provider: nextProvider,
       base_url: preset.baseUrl,
       model: preset.defaultModel,
+      enabled: nextProvider === 'fallback' ? false : true,
     }));
     setModels([]);
     setTestResult(null);
@@ -131,9 +152,9 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
     setSaving(true);
     setStatusMsg(null);
     try {
-      const saved = await backendApi.updateLlmConfig(nextPatch);
+      const saved = await backendApi.updateLlmConfig(nextPatch, activeAgentId);
       setConfig((prev) => ({ ...prev, ...saved, api_key: '' }));
-      setStatusMsg(`Active: ${item.model}`);
+      setStatusMsg(`${activeAgent?.name ?? 'NPC'}: active ${item.model}`);
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : 'Failed to activate local model');
     } finally {
@@ -145,7 +166,7 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
     setLoadingModels(true);
     setStatusMsg(null);
     try {
-      const res = await backendApi.getLlmModels(config.provider, config.base_url);
+      const res = await backendApi.getLlmModels(config.provider, config.base_url, activeAgentId);
       setModels(res.models);
       if (res.models.length > 0 && !res.models.includes(config.model)) {
         setConfig((prev) => ({ ...prev, model: res.models[0] }));
@@ -158,26 +179,43 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
     }
   };
 
+  const buildPayload = (): Partial<LlmConfig> => {
+    const payload: Partial<LlmConfig> = {
+      provider: config.provider,
+      model: config.model,
+      base_url: config.base_url,
+      temperature: config.temperature,
+      decision_interval_ticks: config.decision_interval_ticks,
+      enabled: config.enabled,
+    };
+    if (config.api_key && config.api_key.trim().length > 0) {
+      payload.api_key = config.api_key.trim();
+    }
+    return payload;
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setStatusMsg(null);
     try {
-      const payload: Partial<LlmConfig> = {
-        provider: config.provider,
-        model: config.model,
-        base_url: config.base_url,
-        temperature: config.temperature,
-        decision_interval_ticks: config.decision_interval_ticks,
-        enabled: config.enabled,
-      };
-      if (config.api_key && config.api_key.trim().length > 0) {
-        payload.api_key = config.api_key.trim();
-      }
-      const saved = await backendApi.updateLlmConfig(payload);
+      const saved = await backendApi.updateLlmConfig(buildPayload(), activeAgentId);
       setConfig((prev) => ({ ...prev, ...saved, api_key: '' }));
-      setStatusMsg('Saved');
+      setStatusMsg(`Saved for ${activeAgent?.name ?? activeAgentId}`);
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : 'Failed to save config');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleApplyAll = async () => {
+    setSaving(true);
+    setStatusMsg(null);
+    try {
+      const res = await backendApi.applyLlmToAll(buildPayload());
+      setStatusMsg(`Applied to all ${res.count} NPCs`);
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : 'Failed to apply to all NPCs');
     } finally {
       setSaving(false);
     }
@@ -187,16 +225,7 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
     setTesting(true);
     setTestResult(null);
     try {
-      const payload: Partial<LlmConfig> = {
-        provider: config.provider,
-        model: config.model,
-        base_url: config.base_url,
-        temperature: config.temperature,
-      };
-      if (config.api_key && config.api_key.trim().length > 0) {
-        payload.api_key = config.api_key.trim();
-      }
-      const res = await backendApi.testLlmConnection(payload);
+      const res = await backendApi.testLlmConnection(buildPayload(), activeAgentId);
       setTestResult(res);
     } catch (err) {
       setTestResult({
@@ -210,15 +239,22 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
     }
   };
 
+  const filteredTraces =
+    traceScope === 'all'
+      ? traces
+      : traces.filter((t) => !t.agent_id || t.agent_id === activeAgentId);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-      <div className="w-full max-w-2xl max-h-[86vh] flex flex-col rounded-2xl bg-neutral-950 border border-white/15 shadow-2xl overflow-hidden">
+      <div className="w-full max-w-2xl max-h-[88vh] flex flex-col rounded-2xl bg-neutral-950 border border-white/15 shadow-2xl overflow-hidden">
         <div className="px-5 py-3.5 border-b border-white/10 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <Brain className="w-4 h-4 text-neutral-300" />
             <div>
-              <h2 className="text-xs font-semibold text-white">AI Brain</h2>
-              <p className="text-[11px] text-neutral-400">Local LLM or API Key configuration</p>
+              <h2 className="text-xs font-semibold text-white">NPC Brain Manager</h2>
+              <p className="text-[11px] text-neutral-400">
+                Assign an independent Local LLM, Cloud API Key, or Fallback brain per NPC
+              </p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-neutral-400 hover:text-white cursor-pointer">
@@ -226,24 +262,71 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
           </button>
         </div>
 
-        <div className="px-5 pt-2.5 flex items-center gap-4 border-b border-white/10">
-          <button
-            onClick={() => setTab('config')}
-            className={`pb-2.5 text-xs font-medium border-b-2 transition cursor-pointer ${
-              tab === 'config' ? 'border-white text-white' : 'border-transparent text-neutral-500 hover:text-neutral-200'
-            }`}
-          >
-            Settings
-          </button>
-          <button
-            onClick={() => setTab('traces')}
-            className={`pb-2.5 text-xs font-medium border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
-              tab === 'traces' ? 'border-white text-white' : 'border-transparent text-neutral-500 hover:text-neutral-200'
-            }`}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            Traces ({traces.length})
-          </button>
+        {/* Agent Switcher Strip */}
+        <div className="px-5 py-2.5 border-b border-white/10 bg-neutral-900/40 flex items-center gap-1.5 overflow-x-auto hud-scroll">
+          {agents.map((ag, idx) => {
+            const aid = ag.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`);
+            const selected = aid === activeAgentId;
+            return (
+              <button
+                key={aid}
+                onClick={() => onSelectAgentId(aid)}
+                className={`px-3 py-1.5 rounded-full text-xs shrink-0 transition cursor-pointer border ${
+                  selected
+                    ? 'bg-white text-neutral-950 border-white font-medium'
+                    : 'bg-neutral-900 border-white/10 text-neutral-300 hover:border-white/25'
+                }`}
+              >
+                {ag.name}
+                <span className={`ml-1.5 text-[10px] ${selected ? 'text-neutral-600' : 'text-neutral-500'}`}>
+                  {ag.llm_status?.model || ag.llm_status?.provider || 'fallback'}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="px-5 pt-2.5 flex items-center justify-between border-b border-white/10">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setTab('config')}
+              className={`pb-2.5 text-xs font-medium border-b-2 transition cursor-pointer ${
+                tab === 'config' ? 'border-white text-white' : 'border-transparent text-neutral-500 hover:text-neutral-200'
+              }`}
+            >
+              {activeAgent?.name ?? 'NPC'} Settings
+            </button>
+            <button
+              onClick={() => setTab('traces')}
+              className={`pb-2.5 text-xs font-medium border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+                tab === 'traces' ? 'border-white text-white' : 'border-transparent text-neutral-500 hover:text-neutral-200'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              Traces ({filteredTraces.length})
+            </button>
+          </div>
+
+          {tab === 'traces' && (
+            <div className="flex gap-1 pb-2 text-[10px]">
+              <button
+                onClick={() => setTraceScope('agent')}
+                className={`px-2 py-0.5 rounded cursor-pointer ${
+                  traceScope === 'agent' ? 'bg-white text-neutral-950 font-medium' : 'text-neutral-400'
+                }`}
+              >
+                {activeAgent?.name ?? 'Selected'}
+              </button>
+              <button
+                onClick={() => setTraceScope('all')}
+                className={`px-2 py-0.5 rounded cursor-pointer ${
+                  traceScope === 'all' ? 'bg-white text-neutral-950 font-medium' : 'text-neutral-400'
+                }`}
+              >
+                All NPCs
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto hud-scroll p-5 space-y-4">
@@ -440,16 +523,25 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
                 </label>
               </div>
 
-              <div className="flex items-center justify-between pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                 <div className="text-xs text-neutral-400">{statusMsg}</div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={handleTest}
                     disabled={testing || connectionMode !== 'live'}
-                    className="px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 disabled:opacity-40 text-xs text-neutral-200 cursor-pointer"
+                    className="px-3 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 disabled:opacity-40 text-xs text-neutral-200 cursor-pointer"
                   >
                     {testing ? 'Testing...' : 'Test'}
                   </button>
+                  {agents.length > 1 && (
+                    <button
+                      onClick={handleApplyAll}
+                      disabled={saving || connectionMode !== 'live'}
+                      className="px-3 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 disabled:opacity-40 text-xs text-neutral-200 cursor-pointer"
+                    >
+                      Apply All
+                    </button>
+                  )}
                   <button
                     onClick={handleSave}
                     disabled={saving || connectionMode !== 'live'}
@@ -474,10 +566,10 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
             </>
           ) : (
             <div className="space-y-2">
-              {traces.length === 0 ? (
+              {filteredTraces.length === 0 ? (
                 <div className="text-center py-8 text-xs text-neutral-500">No traces yet.</div>
               ) : (
-                traces.map((tr) => {
+                filteredTraces.map((tr) => {
                   const isOpen = expandedTraceId === tr.id;
                   return (
                     <div key={tr.id} className="rounded-xl bg-neutral-900/70 border border-white/5 overflow-hidden">
@@ -487,7 +579,8 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 text-[11px] font-mono text-neutral-400">
-                            <span className="text-neutral-200">
+                            {tr.agent_name && <span className="text-white">{tr.agent_name}</span>}
+                            <span className="text-neutral-300">
                               {tr.provider}/{tr.model}
                             </span>
                             <span>{tr.latency_ms}ms</span>
