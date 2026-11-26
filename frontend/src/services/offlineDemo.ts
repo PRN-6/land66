@@ -10,10 +10,13 @@ import {
   type BlockUpdate,
   type DayPhase,
   type EntityKind,
+  type FloatingWorldId,
   type LlmConfig,
   type LlmTrace,
+  type MarketCatalogPayload,
   type NpcState,
   type SaveSlotSummary,
+  type ShopItemDef,
   type SimSpeed,
   type WeatherType,
   type WorldEntity,
@@ -127,10 +130,65 @@ interface DemoAgent extends NpcState {
 
 const AGENT_NAMES = ['Elena', 'Rowan', 'Maya', 'Soren', 'Clara', 'Leo', 'Nora'];
 
+const DEMO_SHOP_ITEMS: ShopItemDef[] = [
+  { id: 'marble', name: 'White Marble', category: 'Materials', price: 18, grant_item: 'marble', grant_qty: 4, description: 'Polished ivory architectural stone (x4).' },
+  { id: 'obsidian', name: 'Obsidian', category: 'Materials', price: 24, grant_item: 'obsidian', grant_qty: 4, description: 'Dark volcanic glass stone (x4).' },
+  { id: 'sandstone', name: 'Sandstone', category: 'Materials', price: 12, grant_item: 'sandstone', grant_qty: 4, description: 'Warm desert building stone (x4).' },
+  { id: 'brick', name: 'Clay Brick', category: 'Materials', price: 14, grant_item: 'brick', grant_qty: 4, description: 'Kiln-fired red masonry brick (x4).' },
+  { id: 'crystal', name: 'Crystal Cluster', category: 'Materials', price: 32, grant_item: 'crystal', grant_qty: 2, description: 'Luminous aquamarine cavern crystal (x2).' },
+  { id: 'sunstone', name: 'Sunstone', category: 'Materials', price: 45, grant_item: 'sunstone', grant_qty: 1, description: 'Warm radiant crystal light stone.' },
+  { id: 'gold_ingot', name: 'Gold Ingot', category: 'Materials', price: 38, grant_item: 'gold_ingot', grant_qty: 2, description: 'Refined gilded bar (x2).' },
+  { id: 'copper_ingot', name: 'Copper Ingot', category: 'Materials', price: 22, grant_item: 'copper_ingot', grant_qty: 3, description: 'Warm architectural copper bar (x3).' },
+  { id: 'axe', name: 'Artisan Axe', category: 'Tools & Home', price: 35, grant_item: 'axe', grant_qty: 1, description: 'Sturdy woodcutting axe.' },
+  { id: 'pickaxe', name: 'Miner Pickaxe', category: 'Tools & Home', price: 38, grant_item: 'pickaxe', grant_qty: 1, description: 'Steel-tipped ore pickaxe.' },
+  { id: 'hammer', name: 'Builder Hammer', category: 'Tools & Home', price: 30, grant_item: 'hammer', grant_qty: 1, description: 'Precision carpentry hammer.' },
+  { id: 'bread', name: 'Warm Bakery Loaf', category: 'Food & Farm', price: 12, grant_item: 'bread', grant_qty: 2, description: 'Fresh market loaves (x2).' },
+  { id: 'berries', name: 'Wild Berry Basket', category: 'Food & Farm', price: 10, grant_item: 'berries', grant_qty: 4, description: 'Sweet island berries (x4).' },
+  { id: 'seeds', name: 'Wheat Seeds', category: 'Food & Farm', price: 8, grant_item: 'seeds', grant_qty: 6, description: 'Heirloom wheat seeds (x6).' },
+  { id: 'sapling', name: 'Tree Sapling', category: 'Food & Farm', price: 10, grant_item: 'sapling', grant_qty: 2, description: 'Young saplings to grow trees (x2).' },
+  { id: 'pet_cat', name: 'Market Cat', category: 'Companions', price: 60, spawn_entity: 'cat', description: 'Adopts a playful cat onto your island.' },
+  { id: 'pet_fox', name: 'Red Fox', category: 'Companions', price: 70, spawn_entity: 'fox', description: 'Adopts a curious fox onto your island.' },
+  { id: 'pet_duck', name: 'Pond Duck', category: 'Companions', price: 50, spawn_entity: 'duck', description: 'Adopts a friendly duck near water.' },
+  { id: 'pet_sheep', name: 'Wool Sheep', category: 'Companions', price: 65, spawn_entity: 'sheep', description: 'Adopts a fluffy sheep onto your island.' },
+  { id: 'pet_deer', name: 'Forest Deer', category: 'Companions', price: 85, spawn_entity: 'deer', description: 'Adopts a gentle deer onto your island.' },
+];
+
+const DEMO_SELL_PRICES: Record<string, number> = {
+  berries: 2,
+  wheat: 3,
+  bread: 7,
+  wood_log: 4,
+  wood_plank: 2,
+  stone: 3,
+  iron_ore: 7,
+  coal: 5,
+  gold_ore: 16,
+  crystal: 20,
+  marble: 6,
+  obsidian: 8,
+  sandstone: 4,
+  sunstone: 30,
+};
+
+interface CachedDemoWorld {
+  blocks: Uint8Array;
+  blockMeta: Uint8Array;
+  blockMaterials: string[];
+  surfaceY: Int8Array;
+  state: WorldStateSnapshot;
+  entities: DemoEntity[];
+  extraAgents: DemoAgent[];
+  waypoints: Array<{ x: number; z: number; action: string; goal: string; thought: string }>;
+  entityCounter: number;
+  agentCounter: number;
+}
+
 export class OfflineDemoSimulator {
   private blocks = new Uint8Array(WORLD_VOLUME);
   private blockMeta = new Uint8Array(WORLD_VOLUME);
   private blockMaterials: string[] = new Array(WORLD_VOLUME).fill('');
+  private activeWorldId: FloatingWorldId = 'homestead';
+  private cachedWorlds: Partial<Record<FloatingWorldId, CachedDemoWorld>> = {};
   private rng = mulberry32(6601);
   private state: WorldStateSnapshot;
   private surfaceY = new Int8Array(WORLD_WIDTH * WORLD_DEPTH);
@@ -146,11 +204,12 @@ export class OfflineDemoSimulator {
   private traceCounter = 0;
 
   constructor(seed = 6601) {
-    this.state = this.createInitialState(seed);
+    this.activeWorldId = 'homestead';
+    this.state = this.createInitialState(seed, 'homestead', 250);
     this.generateIsland(seed);
   }
 
-  private createInitialState(seed: number): WorldStateSnapshot {
+  private createInitialState(seed: number, worldId: FloatingWorldId = 'homestead', coins = 250): WorldStateSnapshot {
     return {
       tick: 0,
       day: 1,
@@ -161,6 +220,8 @@ export class OfflineDemoSimulator {
       paused: false,
       speed: 1,
       seed,
+      world_id: worldId,
+      coins,
       npc: {
         id: 'aiden',
         name: 'Aiden',
@@ -263,13 +324,116 @@ export class OfflineDemoSimulator {
   }
 
   public reset(seed = Math.floor(Math.random() * 9000) + 1000): WorldInitMessage {
-    this.state = this.createInitialState(seed);
+    const coins = this.state.coins ?? 250;
+    this.state = this.createInitialState(seed, this.activeWorldId, coins);
     this.demoEntities = [];
     this.extraAgents = [];
     this.entityCounter = 0;
     this.agentCounter = 1;
-    this.generateIsland(seed);
+    if (this.activeWorldId === 'market') {
+      this.generateMarketIsland(seed);
+    } else {
+      this.generateIsland(seed);
+    }
     return this.getInitMessage();
+  }
+
+  public switchWorld(target: FloatingWorldId): WorldInitMessage {
+    if (target === this.activeWorldId) {
+      return this.getInitMessage();
+    }
+    const prevCoins = this.state.coins ?? 250;
+    const prevInv = { ...this.state.npc.inventory };
+    const prevNeeds = { ...this.state.npc.needs };
+
+    this.cachedWorlds[this.activeWorldId] = {
+      blocks: new Uint8Array(this.blocks),
+      blockMeta: new Uint8Array(this.blockMeta),
+      blockMaterials: [...this.blockMaterials],
+      surfaceY: new Int8Array(this.surfaceY),
+      state: structuredClone(this.state),
+      entities: structuredClone(this.demoEntities),
+      extraAgents: structuredClone(this.extraAgents),
+      waypoints: structuredClone(this.waypoints),
+      entityCounter: this.entityCounter,
+      agentCounter: this.agentCounter,
+    };
+
+    this.activeWorldId = target;
+    const cached = this.cachedWorlds[target];
+    if (cached) {
+      this.blocks = new Uint8Array(cached.blocks);
+      this.blockMeta = new Uint8Array(cached.blockMeta);
+      this.blockMaterials = [...cached.blockMaterials];
+      this.surfaceY = new Int8Array(cached.surfaceY);
+      this.state = structuredClone(cached.state);
+      this.demoEntities = structuredClone(cached.entities);
+      this.extraAgents = structuredClone(cached.extraAgents);
+      this.waypoints = structuredClone(cached.waypoints);
+      this.entityCounter = cached.entityCounter;
+      this.agentCounter = cached.agentCounter;
+    } else {
+      this.state = this.createInitialState(this.state.seed + 100, target, prevCoins);
+      this.demoEntities = [];
+      this.extraAgents = [];
+      this.entityCounter = 0;
+      this.agentCounter = 1;
+      this.generateMarketIsland(this.state.seed);
+    }
+
+    this.state.world_id = target;
+    this.state.coins = prevCoins;
+    this.state.npc.inventory = prevInv;
+    this.state.npc.needs = prevNeeds;
+    return this.getInitMessage();
+  }
+
+  public getMarketCatalog(): MarketCatalogPayload {
+    return {
+      coins: this.state.coins ?? 250,
+      world: this.activeWorldId,
+      shop_items: DEMO_SHOP_ITEMS,
+      sell_prices: DEMO_SELL_PRICES,
+    };
+  }
+
+  public marketBuy(itemId: string, quantity = 1, agentId?: string): string {
+    const item = DEMO_SHOP_ITEMS.find((it) => it.id === itemId);
+    if (!item) throw new Error(`Unknown shop item "${itemId}".`);
+    const coins = this.state.coins ?? 250;
+    const totalCost = item.price * quantity;
+    if (coins < totalCost) throw new Error(`Not enough coins (${coins} available, need ${totalCost}).`);
+
+    if (item.spawn_entity) {
+      if (quantity !== 1) throw new Error('Companions are adopted one at a time.');
+      this.handleGodIntervene('spawn_entity', { kind: item.spawn_entity });
+      this.state.coins = coins - totalCost;
+      return `Adopted ${item.name} for ${totalCost} coins.`;
+    }
+    const ag = agentId && agentId !== 'aiden' ? this.extraAgents.find((a) => a.id === agentId) : undefined;
+    const inv = ag ? ag.inventory : this.state.npc.inventory;
+    const key = item.grant_item ?? item.id;
+    const totalQty = (item.grant_qty ?? 1) * quantity;
+    inv[key] = (inv[key] ?? 0) + totalQty;
+    this.state.coins = coins - totalCost;
+    const msg = `Purchased ${item.name} (${totalQty}) for ${totalCost} coins.`;
+    this.state.npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: msg });
+    return msg;
+  }
+
+  public marketSell(itemKey: string, quantity = 1, agentId?: string): string {
+    const unitPrice = DEMO_SELL_PRICES[itemKey];
+    if (!unitPrice) throw new Error(`Merchants are not buying "${itemKey}".`);
+    const ag = agentId && agentId !== 'aiden' ? this.extraAgents.find((a) => a.id === agentId) : undefined;
+    const inv = ag ? ag.inventory : this.state.npc.inventory;
+    const have = inv[itemKey] ?? 0;
+    if (have < quantity) throw new Error(`Not enough ${itemKey.replace(/_/g, ' ')} to sell.`);
+    const earned = unitPrice * quantity;
+    inv[itemKey] = have - quantity;
+    this.state.coins = (this.state.coins ?? 250) + earned;
+    const msg = `Sold ${quantity} ${itemKey.replace(/_/g, ' ')} for +${earned} coins.`;
+    this.state.npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: msg });
+    return msg;
   }
 
   public addAgent(opts: { name?: string; role?: AgentRole; x?: number; y?: number; z?: number }): NpcState {
@@ -541,6 +705,171 @@ export class OfflineDemoSimulator {
     ];
     this.waypointIdx = 0;
     this.updatePerception();
+  }
+
+  private generateMarketIsland(seed: number): void {
+    this.blocks.fill(BlockId.AIR);
+    this.blockMeta.fill(0);
+    this.blockMaterials.fill('');
+    this.surfaceY.fill(-1);
+    this.rng = mulberry32(seed);
+    this.actionTimer = 0;
+    this.buildQueue = [];
+    this.farmQueue = [];
+
+    for (let z = 3; z < WORLD_DEPTH - 2; z++) {
+      for (let x = 3; x < WORLD_WIDTH - 2; x++) {
+        const dx = (x - 16) / 13.5;
+        const dz = (z - 16) / 12.8;
+        const nEdge = (valueNoise2D(x * 0.16, z * 0.16, seed) - 0.5) * 0.2;
+        const dist = Math.hypot(dx, dz) + nEdge;
+        if (dist > 1.0) continue;
+        const topY = 10;
+        const bottomY = Math.max(3, Math.min(9, 3 + Math.round(5.5 * dist * dist)));
+        for (let y = bottomY; y <= topY; y++) {
+          if (y === topY) this.setBlock(x, y, z, BlockId.GRASS, 0, 'meadow_grass');
+          else if (y >= topY - 2) this.setBlock(x, y, z, BlockId.DIRT);
+          else this.setBlock(x, y, z, BlockId.STONE, 0, y <= 4 ? 'obsidian' : y < 7 ? 'slate' : 'granite');
+        }
+        this.surfaceY[z * WORLD_WIDTH + x] = topY;
+      }
+    }
+
+    for (let x = 9; x <= 23; x++) {
+      for (let z = 9; z <= 23; z++) {
+        if ((x >= 12 && x <= 20 && z >= 12 && z <= 20) || (x >= 14 && x <= 18) || (z >= 14 && z <= 18)) {
+          const isBorder = x === 9 || x === 12 || x === 20 || x === 23 || z === 9 || z === 12 || z === 20 || z === 23;
+          this.setBlock(x, 10, z, BlockId.COBBLESTONE, 0, (x + z) % 2 === 0 && !isBorder ? 'marble' : 'sandstone');
+        }
+      }
+    }
+
+    for (let x = 15; x <= 17; x++) {
+      for (let z = 15; z <= 17; z++) {
+        if (x === 16 && z === 16) {
+          this.setBlock(x, 10, z, BlockId.STONE, 0, 'marble');
+          this.setBlock(x, 11, z, BlockId.STONE, 0, 'sunstone');
+        } else {
+          this.setBlock(x, 9, z, BlockId.STONE, 0, 'marble');
+          this.setBlock(x, 10, z, BlockId.WATER);
+        }
+      }
+    }
+
+    const buildStall = (
+      ox: number,
+      oz: number,
+      counterMat: string,
+      postMat: string,
+      roofMat: string,
+      display: Array<[number, number, string]>,
+    ) => {
+      for (let dx = 0; dx < 5; dx++) {
+        for (let dz = 0; dz < 4; dz++) {
+          this.setBlock(ox + dx, 10, oz + dz, BlockId.WOOD_PLANK, 0, 'walnut_boards');
+        }
+      }
+      for (const px of [ox, ox + 4]) {
+        for (const pz of [oz, oz + 3]) {
+          for (let py = 11; py <= 13; py++) this.setBlock(px, py, pz, BlockId.WOOD_LOG, 0, postMat);
+        }
+      }
+      for (let dx = 1; dx <= 3; dx++) {
+        this.setBlock(
+          ox + dx,
+          11,
+          oz + 3,
+          counterMat.endsWith('boards') || counterMat.endsWith('planks') ? BlockId.WOOD_PLANK : BlockId.COBBLESTONE,
+          0,
+          counterMat,
+        );
+      }
+      for (const [dx, bType, mat] of display) {
+        this.setBlock(ox + dx, 11, oz + 1, bType, 0, mat);
+      }
+      this.setBlock(ox, 12, oz + 3, BlockId.TORCH, 0, 'copper_lantern');
+      this.setBlock(ox + 4, 12, oz + 3, BlockId.TORCH, 0, 'copper_lantern');
+      for (let dx = 0; dx < 5; dx++) {
+        for (let dz = 0; dz < 4; dz++) {
+          this.setBlock(ox + dx, 14, oz + dz, BlockId.ROOF_SHINGLE, 0, roofMat);
+        }
+      }
+    };
+
+    buildStall(7, 7, 'bamboo_planks', 'oak_bark', 'terracotta_roof', [
+      [1, BlockId.CHEST, ''],
+      [2, BlockId.CRAFTING_BENCH, ''],
+      [3, BlockId.CHEST, ''],
+    ]);
+    buildStall(20, 7, 'marble', 'birch_bark', 'slate_roof', [
+      [1, BlockId.STONE, 'gold_vein'],
+      [2, BlockId.STONE, 'crystal_vein'],
+      [3, BlockId.COBBLESTONE, 'copper_block'],
+    ]);
+    buildStall(20, 19, 'walnut_boards', 'pine_bark', 'cedar_shingle', [
+      [1, BlockId.CRAFTING_BENCH, ''],
+      [2, BlockId.GLASS, 'stained_glass'],
+      [3, BlockId.CHEST, ''],
+    ]);
+
+    for (const [tx, tz] of [
+      [6, 15],
+      [15, 6],
+      [26, 14],
+      [10, 25],
+      [23, 25],
+    ]) {
+      if (this.getBlock(tx, 10, tz) === BlockId.GRASS) {
+        this.placeTree(tx, 11, tz);
+      }
+    }
+
+    for (const [lx, lz] of [
+      [14, 22],
+      [18, 22],
+      [13, 13],
+      [19, 13],
+    ]) {
+      this.setBlock(lx, 11, lz, BlockId.TORCH, 0, 'copper_lantern');
+    }
+
+    this.state.npc.position = { x: 16, y: 11, z: 22 };
+    this.state.npc.grid_pos = { x: 16, y: 11, z: 22 };
+    this.state.npc.current_goal = 'Browse the floating bazaar stalls and trade goods';
+    this.state.npc.thought = 'Welcome to the Sky Market! Click Shop or inspect a merchant to buy rare goods.';
+    this.state.stats.house_progress = 100;
+    this.state.stats.house_stage = 'complete';
+
+    const merchants: Array<[EntityKind, string, number, number, number]> = [
+      ['villager', 'Baker Pip', 9, 9, 0],
+      ['villager', 'Jeweler Kai', 22, 9, 1],
+      ['villager', 'Artisan Nora', 22, 21, 2],
+      ['cat', 'Mochi', 14, 14, 0],
+      ['duck', 'Puddle', 15, 16, 3],
+    ];
+    for (const [kind, name, mx, mz, variant] of merchants) {
+      this.entityCounter += 1;
+      this.demoEntities.push({
+        id: `ent-${this.entityCounter}`,
+        kind,
+        name,
+        variant,
+        position: { x: mx, y: 11, z: mz },
+        grid_pos: { x: mx, y: 11, z: mz },
+        yaw: 0,
+        animation: 'idle',
+        target: null,
+        wait: 2.0,
+      });
+    }
+
+    this.waypoints = [
+      { x: 16, z: 19, action: 'exploring', goal: 'Browse Sky Market plaza', thought: 'The marble fountain gleams beside the stalls!' },
+      { x: 9, z: 11, action: 'thinking', goal: 'Visit Baker Pip stall', thought: 'Warm bread and berries fresh from the sky bakery.' },
+      { x: 22, z: 11, action: 'thinking', goal: 'Browse Jeweler Kai minerals', thought: 'Crystal veins and gleaming gold ore on display!' },
+      { x: 21, z: 18, action: 'exploring', goal: 'Check Timber Studio', thought: 'Walnut timber and stained glass look ready for Homestead.' },
+    ];
+    this.waypointIdx = 0;
   }
 
   private placeTree(x: number, baseY: number, z: number, updates?: BlockUpdate[]): void {
@@ -1089,6 +1418,8 @@ export class OfflineDemoSimulator {
     return {
       format: 'land66-save-v1',
       save_version: 1,
+      biome: this.activeWorldId,
+      coins: state.coins ?? 250,
       name: (name ?? `Day ${state.day} (${state.clock_str})`).trim().slice(0, 64),
       saved_at: new Date().toISOString(),
       seed: state.seed,
@@ -1190,7 +1521,11 @@ export class OfflineDemoSimulator {
     const rawSpeed = Number(payload.speed ?? 1);
     const speed: SimSpeed = rawSpeed === 2 || rawSpeed === 5 ? rawSpeed : 1;
 
-    this.state = this.createInitialState(seed);
+    const rawBiome = String((payload as Record<string, unknown>).biome ?? 'homestead');
+    const biome: FloatingWorldId = rawBiome === 'market' ? 'market' : 'homestead';
+    const coins = Math.max(0, Number((payload as Record<string, unknown>).coins ?? 250));
+    this.activeWorldId = biome;
+    this.state = this.createInitialState(seed, biome, coins);
     this.state.tick = Math.max(0, Number(payload.tick ?? 0));
     this.state.day = day;
     this.state.time_of_day = timeOfDay;

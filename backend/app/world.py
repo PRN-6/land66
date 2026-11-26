@@ -22,8 +22,9 @@ Pos = tuple[int, int, int]
 class World:
     width, height, depth = WIDTH, HEIGHT, DEPTH
 
-    def __init__(self, seed: int = 66):
+    def __init__(self, seed: int = 66, biome: str = "homestead"):
         self.seed = seed
+        self.biome = biome if biome in {"homestead", "market"} else "homestead"
         self.rng = random.Random(seed)
         self.blocks = [AIR] * (WIDTH * HEIGHT * DEPTH)
         self.meta = [0] * len(self.blocks)
@@ -32,8 +33,11 @@ class World:
         self.resource_nodes: dict[str, dict] = {}
         self.updates: dict[Pos, dict] = {}
         self.locations: dict[int, set[Pos]] = {block: set() for block in PALETTE}
-        self.generate()
-        self.generate_details()
+        if self.biome == "market":
+            self.generate_market()
+        else:
+            self.generate()
+            self.generate_details()
         self.updates.clear()
 
     @staticmethod
@@ -164,6 +168,115 @@ class World:
             if p:
                 self.set(*p, BERRY)
 
+    def generate_market(self) -> None:
+        """Build the Sky Market floating island with paved plaza, three shop stalls, fountain & sakura trees."""
+        # Floating island silhouette with flat y=10 terrace
+        for x in range(3, 30):
+            for z in range(3, 30):
+                r = math.hypot((x - 16) / 13.5, (z - 16) / 12.8)
+                ripple = math.sin(x * .41 + self.seed * .11) * math.cos(z * .37 - self.seed * .09)
+                if r > 1.0 + 0.05 * ripple:
+                    continue
+                top = 10
+                bottom = max(3, min(top - 1, 3 + int(5.5 * r * r + ripple * .6)))
+                for y in range(bottom, top + 1):
+                    if y == top:
+                        self.set(x, y, z, GRASS)
+                        self.set_material((x, y, z), "meadow_grass")
+                    elif y >= top - 2:
+                        self.set(x, y, z, DIRT)
+                    else:
+                        self.set(x, y, z, STONE)
+                        self.set_material((x, y, z), "obsidian" if y <= 4 else "slate" if y < 7 else "granite")
+
+        # Main Marble & Sandstone Market Plaza Walkway (crossroads + central square)
+        for x in range(9, 24):
+            for z in range(9, 24):
+                if (12 <= x <= 20 and 12 <= z <= 20) or (14 <= x <= 18) or (14 <= z <= 18):
+                    self.set(x, 10, z, COBBLE)
+                    is_border = x in {9, 12, 20, 23} or z in {9, 12, 20, 23}
+                    mat = "marble" if (x + z) % 2 == 0 and not is_border else "sandstone"
+                    self.set_material((x, 10, z), mat)
+
+        # Central Wishing Fountain / Reflecting Pool
+        for x in range(15, 18):
+            for z in range(15, 18):
+                if x == 16 and z == 16:
+                    self.set(x, 10, z, STONE)
+                    self.set_material((x, 10, z), "marble")
+                    self.set(x, 11, z, STONE)
+                    self.set_material((x, 11, z), "sunstone")
+                else:
+                    self.set(x, 9, z, STONE)
+                    self.set_material((x, 9, z), "marble")
+                    self.set(x, 10, z, WATER)
+
+        def build_stall(ox: int, oz: int, counter_mat: str, post_mat: str, roof_mat: str, display: list[tuple[int, int, str]]):
+            # Floor platform y=10
+            for dx in range(5):
+                for dz in range(4):
+                    self.set(ox + dx, 10, oz + dz, PLANK)
+                    self.set_material((ox + dx, 10, oz + dz), "walnut_boards")
+            # Corner posts
+            for px in (ox, ox + 4):
+                for pz in (oz, oz + 3):
+                    for py in (11, 12, 13):
+                        self.set(px, py, pz, LOG)
+                        self.set_material((px, py, pz), post_mat)
+            # Counter in front row (z = oz + 3) + back wall props (z = oz)
+            for dx in range(1, 4):
+                self.set(ox + dx, 11, oz + 3, PLANK if counter_mat.endswith("boards") or counter_mat.endswith("planks") else COBBLE)
+                self.set_material((ox + dx, 11, oz + 3), counter_mat)
+            for dx, b_type, mat in display:
+                self.set(ox + dx, 11, oz + 1, b_type)
+                if mat:
+                    self.set_material((ox + dx, 11, oz + 1), mat)
+            # Lantern posts on stall front corners
+            self.set(ox, 12, oz + 3, TORCH)
+            self.set_material((ox, 12, oz + 3), "copper_lantern")
+            self.set(ox + 4, 12, oz + 3, TORCH)
+            self.set_material((ox + 4, 12, oz + 3), "copper_lantern")
+            # Pitched / terraced awning roof at y=14
+            for dx in range(5):
+                for dz in range(4):
+                    self.set(ox + dx, 14, oz + dz, ROOF)
+                    self.set_material((ox + dx, 14, oz + dz), roof_mat)
+
+        # Stall 1 (NW): Baker & Fresh Goods
+        build_stall(7, 7, "bamboo_planks", "oak_bark", "terracotta_roof", [(1, CHEST, ""), (2, BENCH, ""), (3, CHEST, "")])
+        # Stall 2 (NE): Stonemason & Precious Gems
+        build_stall(20, 7, "marble", "birch_bark", "slate_roof", [(1, STONE, "gold_vein"), (2, STONE, "crystal_vein"), (3, COBBLE, "copper_block")])
+        # Stall 3 (E): Timber & Craft Studio
+        build_stall(20, 19, "walnut_boards", "pine_bark", "cedar_shingle", [(1, BENCH, ""), (2, GLASS, "stained_glass"), (3, CHEST, "")])
+
+        # Mini Market Garden Planters (South-West corner)
+        for z in (20, 21):
+            for x in (8, 9):
+                self.set(x, 10, z, FARMLAND, 1)
+                self.set(x, 11, z, WHEAT, 3)
+        self.set(11, 11, 21, BERRY)
+        self.set(7, 11, 22, BERRY)
+
+        # Lanterns lining main South avenue
+        for x, z in ((14, 22), (18, 22), (13, 13), (19, 13)):
+            if self.get(x, 11, z) == AIR:
+                self.set(x, 11, z, TORCH)
+                self.set_material((x, 11, z), "copper_lantern")
+
+        # Decorative Sakura & Birch Trees around perimeter
+        for tx, tz in ((6, 15), (15, 6), (26, 14), (10, 25), (23, 25)):
+            p = self.feet_at(tx, tz)
+            if p and self.get(tx, p[1] - 1, tz) == GRASS:
+                self.grow_tree(p)
+                # Paint all market trees sakura or birch leaves for a festive bazaar feel
+                species_leaf = "sakura_foliage" if (tx + tz) % 2 else "autumn_foliage"
+                for dy in range(3, 6):
+                    for dx in range(-2, 3):
+                        for dz in range(-2, 3):
+                            lp = (tx + dx, p[1] + dy, tz + dz)
+                            if self.get(*lp) == LEAVES:
+                                self.set_material(lp, species_leaf)
+
     def grow_tree(self, p: Pos) -> bool:
         x, y, z = p
         if self.get(x, y - 1, z) not in {GRASS, DIRT}:
@@ -273,6 +386,7 @@ class World:
         sparse_materials = {str(idx): mat for idx, mat in enumerate(self.materials) if mat}
         return {
             "seed": self.seed,
+            "biome": self.biome,
             "width": WIDTH,
             "height": HEIGHT,
             "depth": DEPTH,
@@ -304,6 +418,8 @@ class World:
 
         w = cls.__new__(cls)
         w.seed = int(data.get("seed", 66))
+        biome = str(data.get("biome", "homestead"))
+        w.biome = biome if biome in {"homestead", "market"} else "homestead"
         w.rng = random.Random(w.seed)
         w.blocks = [int(b) if 0 <= int(b) < len(PALETTE) else AIR for b in blocks_raw]
         w.meta = [int(m) for m in meta_raw]

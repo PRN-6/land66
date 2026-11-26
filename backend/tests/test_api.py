@@ -213,3 +213,44 @@ def test_world_init_includes_materials_and_spawn_material_delta():
                 u['x'] == 14 and u['y'] == 11 and u['z'] == 14 and u.get('material') == 'marble'
                 for u in delta['block_updates']
             )
+
+
+def test_switch_to_market_world_and_buy_sell():
+    with TestClient(client_app()) as client:
+        with client.websocket_connect('/ws') as ws:
+            init_home = ws.receive_json()
+            assert init_home['state']['world_id'] == 'homestead'
+            assert init_home['state']['coins'] == 250
+
+            # Give Aiden berries to sell later
+            client.post('/api/god/intervene', json={'action': 'drop_gift', 'value': {'berries': 5}})
+
+            sw = client.post('/api/world/switch', json={'world': 'market'})
+            assert sw.status_code == 200
+            init_market = next_type(ws, 'world_init')
+            assert init_market['state']['world_id'] == 'market'
+            assert init_market['state']['npc']['inventory']['berries'] == 5
+
+            cat = client.get('/api/market/catalog').json()
+            assert cat['coins'] == 250 and len(cat['shop_items']) >= 15
+
+            buy_marble = client.post('/api/market/buy', json={'item_id': 'marble', 'quantity': 2})
+            assert buy_marble.status_code == 200
+            assert buy_marble.json()['coins'] == 214
+            assert buy_marble.json()['state']['npc']['inventory']['marble'] == 8
+
+            buy_cat = client.post('/api/market/buy', json={'item_id': 'pet_cat', 'quantity': 1})
+            assert buy_cat.status_code == 200
+            assert buy_cat.json()['coins'] == 154
+
+            sell = client.post('/api/market/sell', json={'item': 'berries', 'quantity': 3})
+            assert sell.status_code == 200
+            assert sell.json()['earned'] == 6 and sell.json()['coins'] == 160
+
+            # Return home: keep bought marble and updated coins
+            back = client.post('/api/world/switch', json={'world': 'homestead'})
+            assert back.status_code == 200
+            init_back = next_type(ws, 'world_init')
+            assert init_back['state']['world_id'] == 'homestead'
+            assert init_back['state']['coins'] == 160
+            assert init_back['state']['npc']['inventory']['marble'] == 8

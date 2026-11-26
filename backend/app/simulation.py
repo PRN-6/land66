@@ -499,6 +499,15 @@ class NpcAgent:
             if self.apply_decision(decision):
                 return
             self.remember("I reconsidered an idea that was no longer possible.")
+        if sim.biome == "market":
+            spots = [(16, 11, 19), (9, 11, 11), (22, 11, 11), (22, 11, 18), (13, 11, 16)]
+            target_spot = spots[(sim.tick // 80 + self.variant) % len(spots)]
+            if inv["berries"] > 0 and self.needs["hunger"] < 50 and self.choose("eat", "Enjoying a sweet market snack.", "Snack at the bazaar", food="berries"):
+                return
+            if self.grid_pos != target_spot and self.choose("walk", "Strolling past the Sky Market stalls and merchants.", "Browse market stalls", x=target_spot[0], y=target_spot[1], z=target_spot[2]):
+                return
+            self.choose("idle", "Checking prices and rare crafts at the Sky Market.", "Window shop")
+            return
         if self.household.choose_maintenance():
             return
 
@@ -701,14 +710,16 @@ class NpcAgent:
 
 
 class Simulation:
-    def __init__(self, seed: int = 66):
+    def __init__(self, seed: int = 66, biome: str = "homestead", coins: int = 250):
         self.seed, self.rng = seed, random.Random(seed + 731)
-        self.world = World(seed)
+        self.biome = biome if biome in {"homestead", "market"} else "homestead"
+        self.coins = max(0, int(coins))
+        self.world = World(seed, biome=self.biome)
         self.tick, self.elapsed = 0, DAY_SECONDS * .26
         self.paused, self.speed, self.weather = False, 1, "clear"
         self.weather_override = False
-        self.blueprint = house_blueprint()
-        self.farm_sites = [(x, 10, z) for x in (19, 20) for z in range(18, 22)]
+        self.blueprint = [] if self.biome == "market" else house_blueprint()
+        self.farm_sites = [] if self.biome == "market" else [(x, 10, z) for x in (19, 20) for z in range(18, 22)]
         self.crop_age: dict[Pos, float] = {}
         self.wet_age: dict[Pos, float] = {}
         self.berry_regrowth: dict[Pos, float] = {}
@@ -719,9 +730,40 @@ class Simulation:
         self.entity_counter = 0
         self.agent_counter = 1
         self.home = HomeState()
+        start = (16, 11, 22) if self.biome == "market" else (16, 11, 20)
         self.agents: dict[str, NpcAgent] = {
-            "aiden": NpcAgent(self, "aiden", "Aiden", role="pioneer", variant=0, start_pos=(16, 11, 20)),
+            "aiden": NpcAgent(self, "aiden", "Aiden", role="pioneer", variant=0, start_pos=start),
         }
+        if self.biome == "market":
+            self.primary.current_goal = "Browse the floating bazaar stalls and trade goods"
+            self.primary.thought = "Welcome to the Sky Market! I can buy marble, gems, tools, and adopt pets here."
+            self.primary.remember("Arrived at the floating Sky Market plaza.")
+            self._seed_market_merchants()
+
+    def _seed_market_merchants(self) -> None:
+        stalls = [
+            ("villager", "Baker Pip", (9, 11, 9), 0, 0.0),
+            ("villager", "Jeweler Kai", (22, 11, 9), 1, 0.0),
+            ("villager", "Artisan Nora", (22, 11, 21), 2, 0.0),
+            ("cat", "Mochi", (14, 11, 14), 0, 0.8),
+            ("duck", "Puddle", (15, 11, 16), 3, 2.2),
+        ]
+        for kind, name, pos, variant, yaw in stalls:
+            if not self.world.walkable(pos):
+                pos = self._find_open_spot(pos) or (16, 11, 18)
+            self.entity_counter += 1
+            self.entities.append({
+                "id": f"ent-{self.entity_counter}",
+                "kind": kind,
+                "name": name,
+                "variant": variant,
+                "position": {"x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2])},
+                "grid_pos": xyz(pos),
+                "yaw": yaw,
+                "animation": "idle",
+                "target": None,
+                "wait": 2.0,
+            })
 
     @property
     def primary(self) -> NpcAgent:
@@ -839,6 +881,8 @@ class Simulation:
         return next((b for b in self.blueprint if not self.blueprint_matches(b)), None)
 
     def house_progress(self):
+        if not self.blueprint:
+            return 100.0
         return 100 * sum(self.blueprint_matches(b) for b in self.blueprint) / len(self.blueprint)
 
     def tree_bases(self):
@@ -903,6 +947,7 @@ class Simulation:
         return dict(
             tick=self.tick, day=self.day, time_of_day=self.time_of_day, clock_str=self.clock_str,
             phase=self.phase, weather=self.weather, paused=self.paused, speed=self.speed, seed=self.seed,
+            world_id=self.biome, coins=self.coins,
             npc=focus.snapshot(),
             agents=[a.snapshot() for a in self.agents.values()],
             stats=dict(
@@ -1209,6 +1254,8 @@ class Simulation:
         """Export the full simulation state for durable save-file persistence."""
         return {
             "save_version": 1,
+            "biome": self.biome,
+            "coins": int(self.coins),
             "seed": int(self.seed),
             "tick": int(self.tick),
             "elapsed": round(float(self.elapsed), 4),
@@ -1250,6 +1297,9 @@ class Simulation:
         sim.tick = max(0, int(data.get("tick", 0)))
         sim.rng = random.Random(sim.seed + 731 + sim.tick)
         sim.world = World.from_state(data["world"])
+        raw_biome = str(data.get("biome", sim.world.biome))
+        sim.biome = raw_biome if raw_biome in {"homestead", "market"} else "homestead"
+        sim.coins = max(0, int(data.get("coins", 250)))
         sim.elapsed = max(0.0, float(data.get("elapsed", DAY_SECONDS * 0.26)))
         sim.paused = bool(data.get("paused", False))
         raw_speed = int(data.get("speed", 1))
@@ -1257,8 +1307,8 @@ class Simulation:
         raw_weather = str(data.get("weather", "clear"))
         sim.weather = raw_weather if raw_weather in {"clear", "rain", "storm"} else "clear"
         sim.weather_override = bool(data.get("weather_override", False))
-        sim.blueprint = house_blueprint()
-        sim.farm_sites = [(x, 10, z) for x in (19, 20) for z in range(18, 22)]
+        sim.blueprint = [] if sim.biome == "market" else house_blueprint()
+        sim.farm_sites = [] if sim.biome == "market" else [(x, 10, z) for x in (19, 20) for z in range(18, 22)]
         sim.crop_age = _decode_pos_map(data.get("crop_age", []))
         sim.wet_age = _decode_pos_map(data.get("wet_age", []))
         sim.berry_regrowth = _decode_pos_map(data.get("berry_regrowth", []))

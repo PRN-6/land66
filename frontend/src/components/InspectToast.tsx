@@ -13,9 +13,10 @@ interface InspectToastProps {
   state: WorldStateSnapshot;
   agents: NpcState[];
   onClose: () => void;
+  onOpenShop?: () => void;
 }
 
-export function InspectToast({ target, state, agents, onClose }: InspectToastProps) {
+export function InspectToast({ target, state, agents, onClose, onOpenShop }: InspectToastProps) {
   if (!target) return null;
 
   const targetNpc =
@@ -116,6 +117,22 @@ export function InspectToast({ target, state, agents, onClose }: InspectToastPro
           “{targetNpc.thought}”
         </div>
       )}
+
+      {onOpenShop &&
+        state.world_id === 'market' &&
+        ((target.kind === 'entity' && target.entity.kind === 'villager') ||
+          (target.kind === 'block' &&
+            (target.block === BlockId.CHEST ||
+              target.block === BlockId.CRAFTING_BENCH ||
+              target.block === BlockId.COBBLESTONE))) && (
+          <button
+            type="button"
+            onClick={onOpenShop}
+            className="mt-2.5 w-full rounded-xl bg-white px-3 py-1.5 text-[11px] font-medium text-neutral-950 transition hover:bg-neutral-200 cursor-pointer"
+          >
+            Open Market Shop
+          </button>
+        )}
     </div>
   );
 }

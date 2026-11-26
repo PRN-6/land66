@@ -13,10 +13,11 @@ import {
   Route,
   Save,
   SkipForward,
+  Store,
   Sun,
   Video,
 } from 'lucide-react';
-import type { CameraMode, ConnectionMode, SimSpeed, WorldStateSnapshot } from '../types/world';
+import type { CameraMode, ConnectionMode, FloatingWorldId, SimSpeed, WorldStateSnapshot } from '../types/world';
 
 interface TopBarProps {
   state: WorldStateSnapshot;
@@ -26,10 +27,12 @@ interface TopBarProps {
   showPath: boolean;
   inspectorOpen: boolean;
   onControl: (action: 'pause' | 'resume' | 'step' | 'set_speed' | 'reset', speed?: SimSpeed, seed?: number) => void;
+  onSwitchWorld: (world: FloatingWorldId) => void;
   onCameraMode: (mode: CameraMode) => void;
   onToggleThoughtBubble: () => void;
   onTogglePath: () => void;
   onToggleInspector: () => void;
+  onOpenShopModal: () => void;
   onOpenSavesModal: () => void;
   onOpenLlmModal: () => void;
   onToggleOfflineDemo: () => void;
@@ -43,10 +46,12 @@ export function TopBar({
   showPath,
   inspectorOpen,
   onControl,
+  onSwitchWorld,
   onCameraMode,
   onToggleThoughtBubble,
   onTogglePath,
   onToggleInspector,
+  onOpenShopModal,
   onOpenSavesModal,
   onOpenLlmModal,
   onToggleOfflineDemo,
@@ -98,6 +103,31 @@ export function TopBar({
           <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
           <span>{statusText}</span>
         </button>
+      </div>
+
+      {/* Floating World Switcher */}
+      <div className="flex items-center gap-0.5 pr-1.5 border-r border-white/10">
+        {(
+          [
+            { id: 'homestead', label: 'Homestead' },
+            { id: 'market', label: 'Market' },
+          ] as const
+        ).map((w) => {
+          const active = (state.world_id ?? 'homestead') === w.id;
+          return (
+            <button
+              key={w.id}
+              onClick={() => onSwitchWorld(w.id)}
+              className={`px-2 py-0.5 rounded-full text-[11px] transition cursor-pointer ${
+                active
+                  ? 'bg-white text-neutral-950 font-medium'
+                  : 'text-neutral-400 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              {w.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Simulation Controls */}
@@ -240,6 +270,16 @@ export function TopBar({
           }`}
         >
           <PanelRight className="w-3.5 h-3.5" />
+        </button>
+
+        <button
+          onClick={onOpenShopModal}
+          title="Open Sky Market Shop"
+          className="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium text-neutral-300 hover:text-white hover:bg-white/10 transition cursor-pointer"
+        >
+          <Store className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Shop</span>
+          <span className="font-mono text-[10px] text-neutral-400">{state.coins ?? 250}c</span>
         </button>
 
         <button

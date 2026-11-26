@@ -250,3 +250,17 @@ def test_world_new_materials_and_spawn():
     assert s.world.materials[s.world.index(15, 11, 15)] == 'crystal_vein'
     updates = s.world.drain_updates()
     assert any(u['x'] == 15 and u['z'] == 15 and u.get('material') == 'crystal_vein' for u in updates)
+
+
+def test_market_world_generation_and_save_roundtrip():
+    m = Simulation(seed=166, biome='market', coins=320)
+    assert m.biome == 'market'
+    assert m.coins == 320
+    assert m.house_progress() == 100.0
+    assert any(e['name'] == 'Baker Pip' for e in m.entities)
+    assert 'marble' in m.world.materials and 'terracotta_roof' in m.world.materials
+    m.step(0.5, force=True)
+    exported = m.export_save()
+    restored = Simulation.from_save(exported)
+    assert restored.biome == 'market' and restored.coins == 320
+    assert restored.world.biome == 'market'

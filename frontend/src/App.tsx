@@ -7,9 +7,11 @@ import type {
   AgentRole,
   CameraMode,
   ConnectionMode,
+  FloatingWorldId,
   GodTool,
   InspectTarget,
   LlmTrace,
+  MarketCatalogPayload,
   NpcState,
   SaveSlotSummary,
   SimSpeed,
@@ -22,6 +24,7 @@ import { GodDock } from './components/GodDock';
 import { InspectorDrawer } from './components/InspectorDrawer';
 import { LlmModal } from './components/LlmModal';
 import { SaveModal } from './components/SaveModal';
+import { ShopModal } from './components/ShopModal';
 import { InspectToast } from './components/InspectToast';
 import { NpcThoughtOverlay } from './components/NpcThoughtOverlay';
 
@@ -49,6 +52,8 @@ export function App() {
   const [dockTray, setDockTray] = useState<'objects' | 'life' | 'world' | null>(null);
   const [llmModalOpen, setLlmModalOpen] = useState(false);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [shopModalOpen, setShopModalOpen] = useState(false);
+  const [marketCatalog, setMarketCatalog] = useState<MarketCatalogPayload | null>(null);
   const [saveSlots, setSaveSlots] = useState<SaveSlotSummary[]>([]);
   const [savesLoading, setSavesLoading] = useState(false);
   const [llmAgentId, setLlmAgentId] = useState('aiden');
@@ -476,6 +481,79 @@ export function App() {
     }
   }, []);
 
+  const handleSwitchWorld = useCallback(
+    async (world: FloatingWorldId) => {
+      try {
+        if (connectionModeRef.current === 'live') {
+          await backendApi.switchWorld(world);
+        } else {
+          const init = demoSim.switchWorld(world);
+          sceneRef.current?.applyWorldInit(init);
+          setWorldState(init.state);
+          setSelectedAgentId('aiden');
+          sceneRef.current?.setSelectedAgent('aiden');
+        }
+        setInspectTarget(null);
+      } catch (err) {
+        notifyError(err instanceof Error ? err.message : 'Failed to switch world');
+      }
+    },
+    [notifyError],
+  );
+
+  const handleOpenShopModal = useCallback(async () => {
+    setShopModalOpen(true);
+    try {
+      const cat =
+        connectionModeRef.current === 'live'
+          ? await backendApi.getMarketCatalog()
+          : demoSim.getMarketCatalog();
+      setMarketCatalog(cat);
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : 'Failed to load market catalog');
+    }
+  }, [notifyError]);
+
+  const handleMarketBuy = useCallback(
+    async (itemId: string, quantity: number): Promise<string | null> => {
+      try {
+        if (connectionModeRef.current === 'live') {
+          const res = await backendApi.marketBuy(itemId, quantity, selectedAgentId);
+          setWorldState(res.state);
+        } else {
+          demoSim.marketBuy(itemId, quantity, selectedAgentId);
+          const next = demoSim.getState();
+          sceneRef.current?.applyTickUpdate([], next);
+          setWorldState(next);
+        }
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : 'Purchase failed';
+      }
+    },
+    [selectedAgentId],
+  );
+
+  const handleMarketSell = useCallback(
+    async (item: string, quantity: number): Promise<string | null> => {
+      try {
+        if (connectionModeRef.current === 'live') {
+          const res = await backendApi.marketSell(item, quantity, selectedAgentId);
+          setWorldState(res.state);
+        } else {
+          demoSim.marketSell(item, quantity, selectedAgentId);
+          const next = demoSim.getState();
+          sceneRef.current?.applyTickUpdate([], next);
+          setWorldState(next);
+        }
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : 'Sale failed';
+      }
+    },
+    [selectedAgentId],
+  );
+
   return (
     <div className="relative w-full h-full overflow-hidden bg-neutral-950">
       <div ref={viewportRef} className="absolute inset-0 w-full h-full" />
@@ -495,10 +573,12 @@ export function App() {
           showPath={showPath}
           inspectorOpen={inspectorOpen}
           onControl={handleControl}
+          onSwitchWorld={handleSwitchWorld}
           onCameraMode={handleCameraMode}
           onToggleThoughtBubble={() => setShowThoughtBubble((v) => !v)}
           onTogglePath={handleTogglePath}
           onToggleInspector={() => setInspectorOpen((v) => !v)}
+          onOpenShopModal={handleOpenShopModal}
           onOpenSavesModal={handleOpenSavesModal}
           onOpenLlmModal={() => {
             setLlmAgentId(selectedAgentId);
@@ -553,6 +633,19 @@ export function App() {
         state={worldState}
         agents={agents}
         onClose={() => setInspectTarget(null)}
+        onOpenShop={handleOpenShopModal}
+      />
+
+      <ShopModal
+        open={shopModalOpen}
+        onClose={() => setShopModalOpen(false)}
+        worldId={worldState.world_id ?? 'homestead'}
+        coins={worldState.coins ?? 250}
+        selectedAgent={selectedAgent}
+        catalog={marketCatalog}
+        onTravelMarket={() => handleSwitchWorld('market')}
+        onBuy={handleMarketBuy}
+        onSell={handleMarketSell}
       />
 
       <LlmModal

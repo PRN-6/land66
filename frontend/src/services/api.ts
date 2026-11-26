@@ -1,9 +1,11 @@
 import type {
   AgentRole,
   DetectLocalLlmResponse,
+  FloatingWorldId,
   LlmConfig,
   LlmTestResponse,
   LlmTrace,
+  MarketCatalogPayload,
   NpcState,
   SaveSlotSummary,
   SimSpeed,
@@ -215,6 +217,39 @@ export const backendApi = {
   deleteSaveSlot(slot: string): Promise<{ ok: boolean; slot: string }> {
     return requestJson(`/api/sim/saves/${encodeURIComponent(slot)}`, {
       method: 'DELETE',
+    });
+  },
+
+  switchWorld(world: FloatingWorldId): Promise<{ ok: boolean; world: FloatingWorldId; state: WorldStateSnapshot }> {
+    return requestJson('/api/world/switch', {
+      method: 'POST',
+      body: JSON.stringify({ world }),
+    });
+  },
+
+  getMarketCatalog(): Promise<MarketCatalogPayload> {
+    return requestJson('/api/market/catalog');
+  },
+
+  marketBuy(
+    itemId: string,
+    quantity = 1,
+    agentId?: string,
+  ): Promise<{ ok: boolean; message: string; coins: number; state: WorldStateSnapshot }> {
+    return requestJson('/api/market/buy', {
+      method: 'POST',
+      body: JSON.stringify({ item_id: itemId, quantity, ...(agentId ? { agent_id: agentId } : {}) }),
+    });
+  },
+
+  marketSell(
+    item: string,
+    quantity = 1,
+    agentId?: string,
+  ): Promise<{ ok: boolean; message: string; earned: number; coins: number; state: WorldStateSnapshot }> {
+    return requestJson('/api/market/sell', {
+      method: 'POST',
+      body: JSON.stringify({ item, quantity, ...(agentId ? { agent_id: agentId } : {}) }),
     });
   },
 };

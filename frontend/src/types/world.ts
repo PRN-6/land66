@@ -216,6 +216,8 @@ export interface LlmStatus {
   last_error: string | null;
 }
 
+export type FloatingWorldId = 'homestead' | 'market';
+
 export interface WorldStateSnapshot {
   tick: number;
   day: number;
@@ -226,11 +228,31 @@ export interface WorldStateSnapshot {
   paused: boolean;
   speed: SimSpeed | number;
   seed: number;
+  world_id?: FloatingWorldId | string;
+  coins?: number;
   npc: NpcState;
   agents?: NpcState[];
   stats: WorldStats;
   entities?: WorldEntity[];
   llm_status: LlmStatus;
+}
+
+export interface ShopItemDef {
+  id: string;
+  name: string;
+  category: string;
+  price: number;
+  grant_item?: string;
+  grant_qty?: number;
+  spawn_entity?: string;
+  description: string;
+}
+
+export interface MarketCatalogPayload {
+  coins: number;
+  world: FloatingWorldId | string;
+  shop_items: ShopItemDef[];
+  sell_prices: Record<string, number>;
 }
 
 export interface BlockUpdate {

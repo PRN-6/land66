@@ -24,7 +24,11 @@ logger = logging.getLogger("land66")
 
 class Runtime:
     def __init__(self, seed=66, brain: Brain | None = None):
-        self.sim = Simulation(seed)
+        self.worlds: dict[str, Simulation] = {
+            "homestead": Simulation(seed, biome="homestead"),
+            "market": Simulation(seed + 100, biome="market"),
+        }
+        self.active_world_id = "homestead"
         self.default_timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "45"))
         self.brains: dict[str, Brain] = {
             "aiden": brain or Brain(timeout=self.default_timeout),
@@ -33,6 +37,15 @@ class Runtime:
         self.thinking_tasks: dict[str, asyncio.Task] = {}
         self.loop_task: asyncio.Task | None = None
         self.next_think_ticks: dict[str, int] = {"aiden": 0}
+
+    @property
+    def sim(self) -> Simulation:
+        return self.worlds[self.active_world_id]
+
+    @sim.setter
+    def sim(self, s: Simulation) -> None:
+        self.active_world_id = s.biome
+        self.worlds[self.active_world_id] = s
 
     @property
     def brain(self) -> Brain:
@@ -104,11 +117,35 @@ class Runtime:
     async def reset(self, seed):
         await self.cancel_thinking()
         primary_brain = self.brains["aiden"]
-        self.sim = Simulation(seed)
+        coins = self.sim.coins
+        biome = self.active_world_id
+        self.worlds[biome] = Simulation(seed, biome=biome, coins=coins)
         self.brains = {"aiden": primary_brain}
         self.next_think_ticks = {"aiden": 0}
         self.sync_status()
         self.publish(self.sim.world_init())
+
+    async def switch_world(self, target_world: str) -> dict:
+        if target_world not in {"homestead", "market"}:
+            raise ValueError("world must be 'homestead' or 'market'")
+        if target_world == self.active_world_id:
+            return self.sim.snapshot()
+        await self.cancel_thinking()
+        src = self.sim
+        dst = self.worlds[target_world]
+        # Carry player purse, shared party inventory, tools, and needs across worlds
+        dst.coins = src.coins
+        dst.primary.inventory = dict(src.primary.inventory)
+        dst.primary.needs = dict(src.primary.needs)
+        dst.primary.household.tools = dict(src.primary.household.tools)
+        for aid in dst.agents:
+            if aid not in self.brains:
+                self.brains[aid] = Brain(timeout=self.default_timeout)
+        self.active_world_id = target_world
+        self.next_think_ticks = {aid: dst.tick for aid in dst.agents}
+        self.sync_status()
+        self.publish(self.sim.world_init())
+        return self.sim.snapshot()
 
     def export_save(self, name: str | None = None) -> dict:
         from datetime import datetime, timezone
@@ -447,6 +484,54 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         except ValueError as err:
             raise HTTPException(422, str(err))
         return {"ok": True, "slot": removed}
+
+    @app.post("/api/world/switch")
+    async def switch_world(req: dict):
+        rt = runtime()
+        target = str(req.get("world", "")).strip().lower()
+        try:
+            snap = await rt.switch_world(target)
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        return {"ok": True, "world": target, "state": snap}
+
+    @app.get("/api/market/catalog")
+    def get_market_catalog():
+        from .market import market_catalog_payload
+        rt = runtime()
+        return market_catalog_payload(rt.sim, rt.active_world_id)
+
+    @app.post("/api/market/buy")
+    def market_buy(req: dict):
+        from .market import execute_buy
+        rt = runtime()
+        item_id = str(req.get("item_id", "")).strip()
+        qty = req.get("quantity", 1)
+        agent_id = req.get("agent_id")
+        if type(qty) is not int:
+            raise HTTPException(422, "quantity must be an integer")
+        try:
+            msg, info = execute_buy(rt.sim, item_id, qty, agent_id)
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        rt.broadcast_tick()
+        return {"ok": True, "message": msg, **info, "state": rt.sim.snapshot()}
+
+    @app.post("/api/market/sell")
+    def market_sell(req: dict):
+        from .market import execute_sell
+        rt = runtime()
+        item = str(req.get("item", "")).strip()
+        qty = req.get("quantity", 1)
+        agent_id = req.get("agent_id")
+        if type(qty) is not int:
+            raise HTTPException(422, "quantity must be an integer")
+        try:
+            msg, info = execute_sell(rt.sim, item, qty, agent_id)
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        rt.broadcast_tick()
+        return {"ok": True, "message": msg, **info, "state": rt.sim.snapshot()}
 
     @app.post("/api/god/intervene")
     async def intervene(command: Intervention):
