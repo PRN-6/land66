@@ -1,0 +1,414 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import {
+  BlockId,
+  WORLD_DEPTH,
+  WORLD_HEIGHT,
+  WORLD_VOLUME,
+  WORLD_WIDTH,
+  blockIndex,
+  type BlockUpdate,
+  type CameraMode,
+  type InspectTarget,
+  type WorldInitMessage,
+  type WorldStateSnapshot,
+} from '../types/world';
+import { createStylizedMaterials, type StylizedMaterials } from './voxelTextures';
+import {
+  buildWorldMeshes,
+  getBlockParticleColor,
+  type AnimatedPondFish,
+} from './voxelMesher';
+import { NpcModel } from './npcModel';
+import { AtmosphereSystem } from './atmosphere';
+import { WorldEffects } from './particles';
+
+export interface SceneCallbacks {
+  onSelectTarget: (target: InspectTarget | null) => void;
+  onNpcScreenPos?: (pos: { x: number; y: number; visible: boolean }) => void;
+}
+
+export class VoxelWorldScene {
+  private container: HTMLElement;
+  private callbacks: SceneCallbacks;
+  private renderer: THREE.WebGLRenderer;
+  private composer: EffectComposer;
+  private bloomPass: UnrealBloomPass;
+  private scene: THREE.Scene;
+  private camera: THREE.PerspectiveCamera;
+  private controls: OrbitControls;
+
+  private blocks = new Uint8Array(WORLD_VOLUME);
+  private blockMeta = new Uint8Array(WORLD_VOLUME);
+
+  private mats: StylizedMaterials;
+  private worldGroup = new THREE.Group();
+  private dioramaRoot: THREE.Group | null = null;
+  private cropMeshes: THREE.Object3D[] = [];
+  private treeCanopies: THREE.Object3D[] = [];
+  private pondFish: AnimatedPondFish[] = [];
+
+  private npcModel = new NpcModel();
+  private atmosphere: AtmosphereSystem;
+  private effects: WorldEffects;
+
+  private cameraMode: CameraMode = 'orbit';
+  private showPath = true;
+  private timeOfDay = 0.35;
+  private weather = 'clear';
+  private needsRebuild = false;
+  private rafId = 0;
+  private clock = new THREE.Clock();
+  private elapsed = 0;
+  private waterEmitAccum = 0;
+
+  private raycaster = new THREE.Raycaster();
+  private pointerDownPos = { x: 0, y: 0 };
+  private projVec = new THREE.Vector3();
+  private headVec = new THREE.Vector3();
+  private lookVec = new THREE.Vector3();
+  private spoutVec = new THREE.Vector3();
+  private followOffset = new THREE.Vector3(8.5, 6.5, 8.5);
+  private prevNpcPos = new THREE.Vector3(15.5, 11, 15.5);
+
+  private resizeObserver: ResizeObserver;
+
+  constructor(container: HTMLElement, callbacks: SceneCallbacks) {
+    this.container = container;
+    this.callbacks = callbacks;
+
+    const w = Math.max(1, container.clientWidth);
+    const h = Math.max(1, container.clientHeight);
+
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(44, w / h, 0.15, 360);
+    this.camera.position.set(39, 27, 40);
+
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    const dpr = Math.min(window.devicePixelRatio, 1.75);
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(w, h);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
+    container.appendChild(this.renderer.domElement);
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.setPixelRatio(dpr);
+    this.composer.setSize(w, h);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.2, 0.45, 0.92);
+    this.composer.addPass(this.bloomPass);
+    this.composer.addPass(new OutputPass());
+
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.target.set(16, 11, 16);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.08;
+    this.controls.minDistance = 4;
+    this.controls.maxDistance = 88;
+    this.controls.maxPolarAngle = Math.PI * 0.92;
+    this.controls.update();
+
+    this.mats = createStylizedMaterials();
+
+    this.scene.add(this.worldGroup);
+    this.scene.add(this.npcModel.root);
+
+    this.atmosphere = new AtmosphereSystem(this.scene);
+    this.atmosphere.setWaterNormalMap(this.mats.waterNormalMap);
+    this.effects = new WorldEffects(this.scene);
+
+    this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.addEventListener('pointerup', this.onPointerUp);
+
+    this.resizeObserver = new ResizeObserver(() => this.handleResize());
+    this.resizeObserver.observe(container);
+
+    this.animate();
+  }
+
+  private handleResize = (): void => {
+    const w = Math.max(1, this.container.clientWidth);
+    const h = Math.max(1, this.container.clientHeight);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(w, h);
+    this.composer.setSize(w, h);
+    this.bloomPass.setSize(w, h);
+  };
+
+  private onPointerDown = (e: PointerEvent): void => {
+    this.pointerDownPos = { x: e.clientX, y: e.clientY };
+  };
+
+  private onPointerUp = (e: PointerEvent): void => {
+    if (this.cameraMode === 'pov') return;
+    const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
+    if (dist > 5) return;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+
+    const targets: THREE.Object3D[] = [this.npcModel.root];
+    if (this.dioramaRoot) targets.push(this.dioramaRoot);
+
+    const hits = this.raycaster.intersectObjects(targets, true);
+    if (hits.length === 0) {
+      this.callbacks.onSelectTarget(null);
+      return;
+    }
+
+    const hit = hits[0];
+    if (hit.object.userData.isNpc) {
+      this.callbacks.onSelectTarget({ kind: 'npc' });
+      return;
+    }
+
+    if (hit.object.userData.blockCoord) {
+      const { x, y, z } = hit.object.userData.blockCoord as { x: number; y: number; z: number };
+      const idx = blockIndex(x, y, z);
+      this.callbacks.onSelectTarget({
+        kind: 'block',
+        x,
+        y,
+        z,
+        block: this.blocks[idx],
+        meta: this.blockMeta[idx],
+      });
+      return;
+    }
+
+    // Instanced terrain/water hit: resolve block coordinate from hit point
+    const normal = hit.face?.normal ?? new THREE.Vector3(0, 1, 0);
+    const p = hit.point.clone().addScaledVector(normal, -0.08);
+    const bx = Math.floor(p.x);
+    const by = Math.floor(p.y);
+    const bz = Math.floor(p.z);
+    if (bx >= 0 && bx < WORLD_WIDTH && by >= 0 && by < WORLD_HEIGHT && bz >= 0 && bz < WORLD_DEPTH) {
+      const idx = blockIndex(bx, by, bz);
+      const b = this.blocks[idx];
+      if (b !== BlockId.AIR) {
+        this.callbacks.onSelectTarget({
+          kind: 'block',
+          x: bx,
+          y: by,
+          z: bz,
+          block: b,
+          meta: this.blockMeta[idx],
+        });
+        return;
+      }
+    }
+    this.callbacks.onSelectTarget(null);
+  };
+
+  public applyWorldInit(msg: WorldInitMessage): void {
+    this.blocks.fill(0);
+    this.blockMeta.fill(0);
+    const len = Math.min(WORLD_VOLUME, msg.blocks.length);
+    for (let i = 0; i < len; i++) {
+      this.blocks[i] = msg.blocks[i] ?? 0;
+      this.blockMeta[i] = msg.block_meta?.[i] ?? 0;
+    }
+    this.needsRebuild = true;
+    this.applyState(msg.state, true);
+  }
+
+  public applyTickUpdate(blockUpdates: BlockUpdate[], state: WorldStateSnapshot): void {
+    let changed = false;
+    for (const u of blockUpdates) {
+      if (u.x < 0 || u.x >= WORLD_WIDTH || u.y < 0 || u.y >= WORLD_HEIGHT || u.z < 0 || u.z >= WORLD_DEPTH) {
+        continue;
+      }
+      const idx = blockIndex(u.x, u.y, u.z);
+      const oldBlock = this.blocks[idx];
+      const newBlock = u.block;
+      const newMeta = u.meta ?? 0;
+      if (oldBlock !== newBlock || this.blockMeta[idx] !== newMeta) {
+        this.blocks[idx] = newBlock;
+        this.blockMeta[idx] = newMeta;
+        changed = true;
+
+        const burstBlock = newBlock === BlockId.AIR ? oldBlock : newBlock;
+        if (burstBlock !== BlockId.AIR) {
+          this.effects.spawnBlockBurst(u.x, u.y, u.z, getBlockParticleColor(burstBlock), 6);
+        }
+      }
+    }
+    if (changed) {
+      this.needsRebuild = true;
+    }
+    this.applyState(state, false);
+  }
+
+  private applyState(state: WorldStateSnapshot, snapNpc: boolean): void {
+    this.timeOfDay = state.time_of_day;
+    this.weather = state.weather;
+
+    const npc = state.npc;
+    this.npcModel.setTargetState(npc.position, npc.yaw, npc.animation, npc.target_block ?? null);
+    if (snapNpc) {
+      this.npcModel.snapToTarget();
+      this.prevNpcPos.copy(this.npcModel.root.position);
+    }
+
+    this.effects.setTargetBlock(npc.target_block ?? null);
+    this.effects.setPath(npc.path ?? [], this.showPath);
+  }
+
+  private rebuildMeshes(): void {
+    if (this.dioramaRoot) {
+      this.dioramaRoot.traverse((obj) => {
+        if (obj instanceof THREE.InstancedMesh) {
+          obj.dispose();
+        }
+      });
+      this.worldGroup.remove(this.dioramaRoot);
+    }
+
+    const built = buildWorldMeshes(this.blocks, this.blockMeta, this.mats.waterNormalMap);
+    this.dioramaRoot = built.group;
+    this.cropMeshes = built.cropMeshes;
+    this.treeCanopies = built.treeCanopies;
+    this.pondFish = built.pondFish;
+
+    this.worldGroup.add(this.dioramaRoot);
+    this.atmosphere.setWorldAnchors(built.torchPositions, built.foliagePositions, built.mistOrigins);
+  }
+
+  public setCameraMode(mode: CameraMode): void {
+    this.cameraMode = mode;
+    if (mode === 'pov') {
+      this.controls.enabled = false;
+      this.npcModel.root.visible = false;
+    } else {
+      this.controls.enabled = true;
+      this.npcModel.root.visible = true;
+      if (mode === 'follow') {
+        const pos = this.npcModel.root.position;
+        this.controls.target.set(pos.x, pos.y + 1.1, pos.z);
+        this.camera.position.copy(this.controls.target).add(this.followOffset);
+      }
+    }
+  }
+
+  public focusPreset(preset: 'overview' | 'npc'): void {
+    if (preset === 'overview') {
+      this.setCameraMode('orbit');
+      this.controls.target.set(16, 10.5, 16);
+      this.camera.position.set(39, 27, 40);
+      this.controls.update();
+    } else {
+      this.setCameraMode('follow');
+      const pos = this.npcModel.root.position;
+      this.controls.target.set(pos.x, pos.y + 1.1, pos.z);
+      this.camera.position.set(pos.x + 6.5, pos.y + 5.2, pos.z + 6.5);
+      this.controls.update();
+    }
+  }
+
+  public setShowPath(show: boolean): void {
+    this.showPath = show;
+  }
+
+  private animate = (): void => {
+    this.rafId = requestAnimationFrame(this.animate);
+    const dt = Math.min(0.05, this.clock.getDelta());
+    this.elapsed += dt;
+
+    if (this.needsRebuild) {
+      this.rebuildMeshes();
+      this.needsRebuild = false;
+    }
+
+    this.npcModel.update(dt);
+    if (this.npcModel.isWatering()) {
+      this.waterEmitAccum += dt;
+      if (this.waterEmitAccum >= 0.14) {
+        this.waterEmitAccum = 0;
+        this.npcModel.getWaterSpoutWorldPos(this.spoutVec);
+        this.effects.spawnWaterDroplets(this.spoutVec, 2);
+      }
+    }
+
+    this.atmosphere.update(dt, this.elapsed, this.timeOfDay, this.weather, this.scene);
+    this.effects.update(dt, this.elapsed);
+
+    // Gentle breeze sway on crops & billowing tree canopies
+    for (let i = 0; i < this.cropMeshes.length; i++) {
+      this.cropMeshes[i].rotation.z = Math.sin(this.elapsed * 2.2 + i * 0.7) * 0.05;
+    }
+    for (let i = 0; i < this.treeCanopies.length; i++) {
+      this.treeCanopies[i].rotation.z = Math.sin(this.elapsed * 1.1 + i * 1.3) * 0.02;
+      this.treeCanopies[i].rotation.x = Math.cos(this.elapsed * 0.9 + i * 0.9) * 0.015;
+    }
+
+    // Swimming koi fish in pond
+    for (const f of this.pondFish) {
+      const ang = this.elapsed * f.speed + f.phase;
+      const nx = f.centerX + Math.cos(ang) * f.radius;
+      const nz = f.centerZ + Math.sin(ang) * f.radius;
+      f.mesh.position.set(nx, f.y + Math.sin(this.elapsed * 3 + f.phase) * 0.02, nz);
+      f.mesh.rotation.y = -ang;
+    }
+
+    const npcPos = this.npcModel.root.position;
+    if (this.cameraMode === 'pov') {
+      this.npcModel.getHeadWorldPosition(this.headVec);
+      this.npcModel.getForwardLookTarget(10, this.lookVec);
+      this.camera.position.copy(this.headVec);
+      this.camera.lookAt(this.lookVec);
+    } else {
+      if (this.cameraMode === 'follow') {
+        const deltaX = npcPos.x - this.prevNpcPos.x;
+        const deltaY = npcPos.y - this.prevNpcPos.y;
+        const deltaZ = npcPos.z - this.prevNpcPos.z;
+        this.controls.target.set(npcPos.x, npcPos.y + 1.1, npcPos.z);
+        this.camera.position.x += deltaX;
+        this.camera.position.y += deltaY;
+        this.camera.position.z += deltaZ;
+      }
+      this.controls.update();
+    }
+    this.prevNpcPos.copy(npcPos);
+
+    if (this.callbacks.onNpcScreenPos) {
+      if (this.cameraMode === 'pov') {
+        this.callbacks.onNpcScreenPos({ x: 0, y: 0, visible: false });
+      } else {
+        this.projVec.set(npcPos.x, npcPos.y + 2.2, npcPos.z);
+        this.projVec.project(this.camera);
+        const visible = this.projVec.z >= -1 && this.projVec.z <= 1;
+        const x = (this.projVec.x * 0.5 + 0.5) * this.container.clientWidth;
+        const y = (-this.projVec.y * 0.5 + 0.5) * this.container.clientHeight;
+        this.callbacks.onNpcScreenPos({ x, y, visible });
+      }
+    }
+
+    this.composer.render();
+  };
+
+  public dispose(): void {
+    cancelAnimationFrame(this.rafId);
+    this.resizeObserver.disconnect();
+    this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp);
+    this.controls.dispose();
+    this.mats.waterNormalMap.dispose();
+    this.composer.dispose();
+    this.renderer.dispose();
+    if (this.renderer.domElement.parentNode === this.container) {
+      this.container.removeChild(this.renderer.domElement);
+    }
+  }
+}
