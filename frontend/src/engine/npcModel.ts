@@ -314,7 +314,16 @@ export class NpcModel {
     const food = new THREE.Mesh(new THREE.CapsuleGeometry(0.06, 0.12, 6, 8), breadMat);
     food.rotation.z = Math.PI * 0.5;
 
-    this.toolMeshes = { axe, pick, hoe, can, block, food };
+    const spear = new THREE.Group();
+    const sShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.024, 0.85, 8), woodMat);
+    sShaft.rotation.x = Math.PI * 0.45;
+    sShaft.position.set(0, 0.08, 0.24);
+    const sTip = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.18, 6), steelMat);
+    sTip.rotation.x = Math.PI * 0.45;
+    sTip.position.set(0, 0.15, 0.66);
+    spear.add(sShaft, sTip);
+
+    this.toolMeshes = { axe, pick, hoe, can, block, food, spear };
     for (const mesh of Object.values(this.toolMeshes)) {
       mesh.visible = false;
       mesh.traverse((o) => {
@@ -345,6 +354,7 @@ export class NpcModel {
       building: 'block',
       eating: 'food',
       drinking: 'can',
+      hunting: 'spear',
     };
     const desired = toolForAnim[this.animation] ?? 'none';
     if (desired !== this.currentToolKind) {
@@ -437,6 +447,16 @@ export class NpcModel {
       this.bodyPivot.rotation.x = 0.14 + Math.max(0, swing) * 0.18;
       this.torsoGroup.rotation.y = -0.15 + Math.max(0, swing) * 0.25;
       this.headGroup.rotation.x = 0.22;
+    } else if (a === 'hunting') {
+      const thrust = Math.sin(t * 7.2);
+      this.bodyPivot.rotation.x = 0.16;
+      this.rightShoulderPivot.rotation.x = -1.25 + thrust * 0.55;
+      this.rightElbowPivot.rotation.x = -0.3 + thrust * 0.25;
+      this.leftShoulderPivot.rotation.x = -0.5;
+      this.leftElbowPivot.rotation.x = -0.65;
+      this.leftHipPivot.rotation.x = -0.18;
+      this.rightHipPivot.rotation.x = 0.18;
+      this.headGroup.rotation.x = 0.08;
     } else if (a === 'building') {
       const place = Math.sin(t * 7.5);
       this.rightShoulderPivot.rotation.x = -0.85 + place * 0.42;

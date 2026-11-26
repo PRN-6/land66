@@ -10,6 +10,7 @@ interface InspectorDrawerProps {
   onSelectAgent: (agentId: string) => void;
   onOpenBrainForAgent: (agentId: string) => void;
   onDeleteAgent: (agentId: string) => void;
+  onNpcAction?: (action: string, params?: Record<string, unknown>, agentId?: string) => void;
 }
 
 function formatEntry(entry: MemoryItem | string): { tag: string; text: string } {
@@ -46,6 +47,7 @@ export function InspectorDrawer({
   onSelectAgent,
   onOpenBrainForAgent,
   onDeleteAgent,
+  onNpcAction,
 }: InspectorDrawerProps) {
   const [tab, setTab] = useState<'mind' | 'vitals' | 'world'>('mind');
   const [logMode, setLogMode] = useState<'memories' | 'journal'>('memories');
@@ -239,17 +241,89 @@ export function InspectorDrawer({
             </div>
 
             <div className="p-2.5 rounded-xl bg-neutral-900/70 border border-white/5 space-y-2">
+              <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-neutral-500">
+                <span>Weapons & Hunting</span>
+                <span className="font-mono text-neutral-400">
+                  {npc.weapons &&
+                  Object.entries(npc.weapons).find(([, v]) => v.owned > 0 && v.durability > 0)?.[0]?.replace(/_/g, ' ')
+                    ? 'Armed'
+                    : 'Unarmed'}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1">
+                {(
+                  [
+                    { key: 'wooden_spear', label: 'Spear', cost: '1 log, 1 stone' },
+                    { key: 'hunting_bow', label: 'Bow', cost: '2 plank, 2 rope' },
+                    { key: 'iron_sword', label: 'Sword', cost: '2 iron, 1 plank' },
+                  ] as const
+                ).map((w) => {
+                  const info = npc.weapons?.[w.key];
+                  const owned = info?.owned ?? npc.inventory[w.key] ?? 0;
+                  return (
+                    <div
+                      key={w.key}
+                      title={w.cost}
+                      className="rounded-lg bg-neutral-950/70 border border-white/5 px-1.5 py-1 text-center"
+                    >
+                      <div className="text-[10px] text-neutral-300 truncate">{w.label}</div>
+                      <div className="text-[10px] font-mono text-neutral-400">
+                        {owned > 0 ? `${Math.round(info?.durability ?? 100)}%` : 'None'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {onNpcAction && (
+                <div className="flex flex-wrap gap-1 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => onNpcAction('craft', { recipe: 'wooden_spear' }, activeId)}
+                    className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[10px] text-neutral-200 cursor-pointer"
+                  >
+                    Craft Spear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNpcAction('craft', { recipe: 'hunting_bow' }, activeId)}
+                    className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[10px] text-neutral-200 cursor-pointer"
+                  >
+                    Craft Bow
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNpcAction('hunt', {}, activeId)}
+                    className="px-2 py-1 rounded-lg bg-white text-neutral-950 font-medium hover:bg-neutral-200 text-[10px] cursor-pointer"
+                  >
+                    Hunt Animal
+                  </button>
+                  {(npc.inventory.raw_meat ?? 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => onNpcAction('craft', { recipe: 'cooked_meat' }, activeId)}
+                      className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[10px] text-neutral-200 cursor-pointer"
+                    >
+                      Cook Meat
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-neutral-900/70 border border-white/5 space-y-2">
               <div className="text-[10px] uppercase tracking-wider text-neutral-500">Inventory</div>
               <div className="grid grid-cols-2 gap-1.5">
-                {Object.entries(npc.inventory).map(([k, qty]) => (
-                  <div
-                    key={k}
-                    className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-neutral-950/70 border border-white/5 text-[11px]"
-                  >
-                    <span className="text-neutral-400 capitalize truncate">{k.replace(/_/g, ' ')}</span>
-                    <span className="font-mono text-neutral-100 ml-1">{qty}</span>
-                  </div>
-                ))}
+                {Object.entries(npc.inventory)
+                  .filter(([k, qty]) => qty > 0 || ['wood_log', 'wood_plank', 'stone', 'berries', 'bread', 'cooked_meat'].includes(k))
+                  .map(([k, qty]) => (
+                    <div
+                      key={k}
+                      className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-neutral-950/70 border border-white/5 text-[11px]"
+                    >
+                      <span className="text-neutral-400 capitalize truncate">{k.replace(/_/g, ' ')}</span>
+                      <span className="font-mono text-neutral-100 ml-1">{qty}</span>
+                    </div>
+                  ))}
               </div>
             </div>
           </>

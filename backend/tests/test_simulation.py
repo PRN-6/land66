@@ -292,3 +292,39 @@ def test_teleport_gate_riddles_study_and_assembly():
     exported = s.export_save()
     restored = Simulation.from_save(exported)
     assert restored.gate_discovered and restored.gate_unlocked
+
+
+def test_weapon_crafting_hunting_and_cooking():
+    s = Simulation(seed=66)
+    s.intervene('spawn_entity', {'kind': 'deer', 'name': 'Bambi'})
+    assert len(s.entities) == 1
+    # Cannot hunt without crafting or owning a weapon first
+    assert not s.start_action('hunt')
+
+    # Craft wooden_spear from wood_log + stone
+    s.inventory['wood_log'] = 1
+    s.inventory['stone'] = 1
+    assert s.start_action('craft', {'recipe': 'wooden_spear'})
+    finish(s)
+    assert s.inventory['wooden_spear'] == 1
+    assert s.primary.household.weapons['wooden_spear'] == 100.0
+
+    # Hunt deer -> drops raw_meat & hide, removes deer, wears weapon
+    assert s.start_action('hunt')
+    assert s.animation == 'hunting' or s.animation == 'walking'
+    finish(s)
+    assert len(s.entities) == 0
+    assert s.inventory['raw_meat'] == 3 and s.inventory['hide'] == 2
+    assert s.primary.household.weapons['wooden_spear'] == 90.0
+
+    # Cook raw meat into cooked_meat and eat it
+    assert s.start_action('craft', {'recipe': 'cooked_meat'})
+    finish(s)
+    assert s.inventory['cooked_meat'] == 1 and s.inventory['raw_meat'] == 2
+    s.needs['hunger'] = 30.0
+    assert s.start_action('eat')
+    finish(s)
+    assert s.needs['hunger'] >= 80.0 and s.inventory['cooked_meat'] == 0
+
+    # Verify AI JSON schema accepts hunt action
+    assert Decision(thought='Hunt game', goal='Eat', action='hunt').action == 'hunt'

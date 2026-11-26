@@ -109,7 +109,8 @@ export type NpcAnimation =
   | 'eating'
   | 'drinking'
   | 'sleeping'
-  | 'thinking';
+  | 'thinking'
+  | 'hunting';
 
 export type DayPhase = 'dawn' | 'morning' | 'afternoon' | 'evening' | 'night';
 export type WeatherType = 'clear' | 'rain' | 'storm';
@@ -168,6 +169,8 @@ export interface NpcState {
   memories: Array<MemoryItem | string>;
   journal: Array<MemoryItem | string>;
   llm_status?: LlmStatus;
+  tools?: Record<string, { durability: number; owned: number }>;
+  weapons?: Record<string, { durability: number; owned: number }>;
 }
 
 export interface HouseBounds {

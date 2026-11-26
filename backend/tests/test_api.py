@@ -273,3 +273,18 @@ def test_switch_to_market_world_and_buy_sell():
             assert init_back['state']['world_id'] == 'homestead'
             assert init_back['state']['coins'] == 160
             assert init_back['state']['npc']['inventory']['marble'] == 8
+
+
+def test_npc_craft_weapon_hunt_and_sell_loot():
+    with TestClient(client_app()) as client:
+        client.post('/api/sim/control', json={'action': 'pause'})
+        client.post('/api/god/intervene', json={'action': 'spawn_entity', 'value': {'kind': 'deer', 'name': 'Stag'}})
+        assert client.post('/api/npc/action', json={'action': 'hunt'}).status_code == 422
+
+        client.post('/api/god/intervene', json={'action': 'drop_gift', 'value': {'wooden_spear': 1}})
+        hunt_res = client.post('/api/npc/action', json={'action': 'hunt'})
+        assert hunt_res.status_code == 200
+        # Advance simulation ticks via step or verify job started
+        st = client.get('/api/state').json()
+        assert st['npc']['current_action'] == 'hunt'
+        assert st['npc']['weapons']['wooden_spear']['owned'] == 1

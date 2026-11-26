@@ -24,10 +24,14 @@ SHOP_ITEMS: list[dict] = [
     {"id": "axe", "name": "Artisan Axe", "category": "Tools & Home", "price": 35, "grant_item": "axe", "grant_qty": 1, "description": "Sturdy woodcutting axe (100% durability)."},
     {"id": "pickaxe", "name": "Miner Pickaxe", "category": "Tools & Home", "price": 38, "grant_item": "pickaxe", "grant_qty": 1, "description": "Steel-tipped ore pickaxe (100% durability)."},
     {"id": "hammer", "name": "Builder Hammer", "category": "Tools & Home", "price": 30, "grant_item": "hammer", "grant_qty": 1, "description": "Precision carpentry hammer (100% durability)."},
+    {"id": "wooden_spear", "name": "Hunting Spear", "category": "Tools & Home", "price": 22, "grant_item": "wooden_spear", "grant_qty": 1, "description": "Sharpened timber spear for hunting island game."},
+    {"id": "hunting_bow", "name": "Hunting Bow", "category": "Tools & Home", "price": 36, "grant_item": "hunting_bow", "grant_qty": 1, "description": "Long-reach bow for swift deer, fox, and ducks."},
+    {"id": "iron_sword", "name": "Forged Iron Sword", "category": "Tools & Home", "price": 52, "grant_item": "iron_sword", "grant_qty": 1, "description": "Masterwork blade crafted for maximum hunting yield."},
     {"id": "stove", "name": "Brick Stove Kit", "category": "Tools & Home", "price": 55, "grant_item": "stove", "grant_qty": 1, "description": "Warmth and indoor cooking fixture."},
     {"id": "rain_barrel", "name": "Rain Barrel", "category": "Tools & Home", "price": 40, "grant_item": "rain_barrel", "grant_qty": 1, "description": "Collects freshwater from rain showers."},
     {"id": "lantern", "name": "Copper Lantern", "category": "Tools & Home", "price": 25, "grant_item": "lantern", "grant_qty": 1, "description": "Cozy warm home lantern."},
     # Food & Farm
+    {"id": "cooked_meat", "name": "Roasted Roast", "category": "Food & Farm", "price": 16, "grant_item": "cooked_meat", "grant_qty": 2, "description": "Savory campfire roast (x2, +55 hunger)."},
     {"id": "bread", "name": "Warm Bakery Loaf", "category": "Food & Farm", "price": 12, "grant_item": "bread", "grant_qty": 2, "description": "Fresh market loaves (x2)."},
     {"id": "berries", "name": "Wild Berry Basket", "category": "Food & Farm", "price": 10, "grant_item": "berries", "grant_qty": 4, "description": "Sweet island berries (x4)."},
     {"id": "seeds", "name": "Wheat Seeds", "category": "Food & Farm", "price": 8, "grant_item": "seeds", "grant_qty": 6, "description": "Heirloom wheat seeds (x6)."},
@@ -68,6 +72,10 @@ SELL_PRICES: dict[str, int] = {
     "iron_ingot": 9,
     "copper_ingot": 10,
     "gold_ingot": 22,
+    "raw_meat": 5,
+    "cooked_meat": 12,
+    "hide": 14,
+    "feather": 6,
 }
 
 
@@ -106,6 +114,8 @@ def execute_buy(sim: Simulation, item_id: str, quantity: int = 1, agent_id: str 
         ag.inventory[grant_item] += grant_total
         if grant_item in ag.household.tools:
             ag.household.tools[grant_item] = 100.0
+        elif grant_item in ag.household.weapons:
+            ag.household.weapons[grant_item] = 100.0
         msg = f"Purchased {item['name']} ({grant_total} {grant_item.replace('_', ' ')}) for {total_cost} coins."
 
     ag.remember(f"Sky Market: {msg}")

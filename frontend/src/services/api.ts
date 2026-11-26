@@ -280,4 +280,15 @@ export const backendApi = {
       body: JSON.stringify({ mode, ...(agentId ? { agent_id: agentId } : {}) }),
     });
   },
+
+  npcAction(
+    action: string,
+    params?: Record<string, unknown>,
+    agentId?: string,
+  ): Promise<{ ok: boolean; action: string; agent_id: string; state: WorldStateSnapshot }> {
+    return requestJson('/api/npc/action', {
+      method: 'POST',
+      body: JSON.stringify({ action, ...(params ? { params } : {}), ...(agentId ? { agent_id: agentId } : {}) }),
+    });
+  },
 };

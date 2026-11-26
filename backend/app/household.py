@@ -87,6 +87,7 @@ class Household:
         self.home = agent.sim.home
         self.sim = AgentContext(agent)
         self.tools = dict(axe=0.0,pickaxe=0.0,hammer=0.0)
+        self.weapons = dict(wooden_spear=0.0, hunting_bow=0.0, iron_sword=0.0)
 
     def __getattr__(self,name):
         if name in self.SHARED:
@@ -219,6 +220,8 @@ class Household:
                     inv[key] += amount
                     if key in self.tools:
                         self.tools[key] = 100
+                    elif key in self.weapons:
+                        self.weapons[key] = 100
                 s.remember(f"Crafted {params['recipe'].replace('_',' ')} from supplies I gathered.")
         elif action == "gather":
             node = w.resource_nodes.get(params["node_id"])
@@ -282,6 +285,27 @@ class Household:
     def tool_bonus(self, action):
         key = TOOL_FOR_ACTION.get(action)
         return .7 if key and self.tools[key] > 0 and self.sim.inventory[key] > 0 else 1
+
+    def active_weapon(self) -> str | None:
+        for w_key in ("iron_sword", "hunting_bow", "wooden_spear"):
+            if self.sim.inventory.get(w_key, 0) > 0:
+                if self.weapons.get(w_key, 0) <= 0:
+                    self.weapons[w_key] = 100.0
+                return w_key
+        return None
+
+    def wear_weapon(self, weapon: str | None):
+        if not weapon or weapon not in self.weapons:
+            return
+        if self.sim.inventory.get(weapon, 0) <= 0:
+            self.weapons[weapon] = 0.0
+            return
+        self.weapons[weapon] = max(0.0, self.weapons[weapon] - 10.0)
+        if self.weapons[weapon] <= 0:
+            self.sim.inventory[weapon] -= 1
+            if self.sim.inventory[weapon] > 0:
+                self.weapons[weapon] = 100.0
+            self.sim.remember(f"My {weapon.replace('_', ' ')} broke; I need to craft another.")
 
     def wear_tool(self, action):
         key = TOOL_FOR_ACTION.get(action)

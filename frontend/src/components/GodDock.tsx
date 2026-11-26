@@ -522,9 +522,19 @@ export function GodDock({
               <option value="wood_plank">Planks (+3)</option>
               <option value="stone">Stone (+3)</option>
               <option value="bread">Bread (+3)</option>
+              <option value="cooked_meat">Cooked Meat (+3)</option>
+              <option value="wooden_spear">Wooden Spear (+1)</option>
+              <option value="hunting_bow">Hunting Bow (+1)</option>
+              <option value="iron_sword">Iron Sword (+1)</option>
             </select>
             <button
-              onClick={() => onGodIntervene('drop_gift', { [giftItem]: 3 }, selectedAgentId)}
+              onClick={() =>
+                onGodIntervene(
+                  'drop_gift',
+                  { [giftItem]: ['wooden_spear', 'hunting_bow', 'iron_sword'].includes(giftItem) ? 1 : 3 },
+                  selectedAgentId,
+                )
+              }
               className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 border border-white/10 text-[11px] text-white cursor-pointer"
             >
               Gift {selectedNpc.name}

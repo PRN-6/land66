@@ -59,7 +59,11 @@ class ConfigPatch(BaseModel):
     enabled: bool | None = None
 
 
-Action = Literal["idle", "explore", "walk", "forage", "drink", "eat", "sleep", "chop", "mine", "craft", "build", "till", "plant", "water", "harvest", "plant_sapling", "journal"]
+Action = Literal[
+    "idle", "explore", "walk", "forage", "drink", "eat", "sleep", "chop", "mine",
+    "craft", "build", "till", "plant", "water", "harvest", "plant_sapling",
+    "journal", "gather", "study_gate", "build_gate", "hunt"
+]
 
 
 class Decision(BaseModel):

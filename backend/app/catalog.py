@@ -48,13 +48,16 @@ EXTRA_ITEMS = ("fiber", "clay", "sand", "iron_ore", "coal", "gold_ore", "crystal
                "marble", "obsidian", "sandstone", "sunstone", "bamboo",
                "rope", "cloth", "brick", "glass_pane", "iron_ingot", "gold_ingot", "copper_ingot",
                "nails", "shingles", "firewood", "soap", "bedding", "axe", "pickaxe", "hammer",
+               "wooden_spear", "hunting_bow", "iron_sword", "raw_meat", "cooked_meat", "hide", "feather",
                "table", "chair", "stove", "rain_barrel", "washbasin", "pantry", "compost_bin", "lantern", "compost")
 INVENTORY_KEYS = BASE_ITEMS + EXTRA_ITEMS
 ITEMS = {key: {"name": key.replace("_", " ").title(), "category": "raw_material"} for key in INVENTORY_KEYS}
-for key in ("berries", "bread", "wheat"):
+for key in ("berries", "bread", "wheat", "raw_meat", "cooked_meat"):
     ITEMS[key]["category"] = "food"
 for key in ("axe", "pickaxe", "hammer"):
     ITEMS[key].update(category="tool", max_durability=100)
+for key in ("wooden_spear", "hunting_bow", "iron_sword"):
+    ITEMS[key].update(category="weapon", max_durability=100)
 for key in ("seeds", "sapling", "compost"):
     ITEMS[key]["category"] = "gardening"
 for key in ("table", "chair", "stove", "rain_barrel", "washbasin", "pantry", "compost_bin", "lantern", "bedding"):
@@ -93,6 +96,10 @@ RECIPES = {
     "gold_ingot": recipe({"gold_ore": 2, "coal": 1}, {"gold_ingot": 2}, 6),
     "copper_ingot": recipe({"copper_ore": 2, "coal": 1}, {"copper_ingot": 2}, 5),
     "sunstone": recipe({"crystal": 1, "gold_ore": 1}, {"sunstone": 1}, 4),
+    "wooden_spear": recipe({"wood_log": 1, "stone": 1}, {"wooden_spear": 1}, 3),
+    "hunting_bow": recipe({"wood_plank": 2, "rope": 2}, {"hunting_bow": 1}, 4),
+    "iron_sword": recipe({"iron_ingot": 2, "wood_plank": 1}, {"iron_sword": 1}, 5, "crafting_bench"),
+    "cooked_meat": recipe({"raw_meat": 1}, {"cooked_meat": 1}, 2),
 }
 
 FIXTURES = {

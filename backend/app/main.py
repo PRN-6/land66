@@ -568,6 +568,21 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         msg = "Sky Teleport Gate activated! Travel to Sky Market is unlocked." if rt.sim.gate_unlocked else f"Added {placed.surface_material.replace('_', ' ')} to the Teleport Gate."
         return {"ok": True, "message": msg, "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
 
+    @app.post("/api/npc/action")
+    def dispatch_npc_action(req: dict):
+        rt = runtime()
+        action = str(req.get("action", "")).strip()
+        params = req.get("params") if isinstance(req.get("params"), dict) else {}
+        agent_id = req.get("agent_id")
+        ag = rt.sim._resolve_agent(agent_id)
+        if not action:
+            raise HTTPException(422, "action is required")
+        ok = ag.start_action(action, params)
+        if not ok:
+            raise HTTPException(422, f"{ag.name} cannot start '{action}' right now (missing materials, weapon, or reachable target).")
+        rt.broadcast_tick()
+        return {"ok": True, "action": action, "agent_id": ag.id, "state": rt.sim.snapshot()}
+
     @app.get("/api/market/catalog")
     def get_market_catalog():
         from .market import market_catalog_payload

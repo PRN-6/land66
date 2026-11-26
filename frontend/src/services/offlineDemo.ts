@@ -143,6 +143,10 @@ const DEMO_SHOP_ITEMS: ShopItemDef[] = [
   { id: 'axe', name: 'Artisan Axe', category: 'Tools & Home', price: 35, grant_item: 'axe', grant_qty: 1, description: 'Sturdy woodcutting axe.' },
   { id: 'pickaxe', name: 'Miner Pickaxe', category: 'Tools & Home', price: 38, grant_item: 'pickaxe', grant_qty: 1, description: 'Steel-tipped ore pickaxe.' },
   { id: 'hammer', name: 'Builder Hammer', category: 'Tools & Home', price: 30, grant_item: 'hammer', grant_qty: 1, description: 'Precision carpentry hammer.' },
+  { id: 'wooden_spear', name: 'Hunting Spear', category: 'Tools & Home', price: 22, grant_item: 'wooden_spear', grant_qty: 1, description: 'Sharpened timber spear for hunting.' },
+  { id: 'hunting_bow', name: 'Hunting Bow', category: 'Tools & Home', price: 36, grant_item: 'hunting_bow', grant_qty: 1, description: 'Long-reach bow for forest wildlife.' },
+  { id: 'iron_sword', name: 'Iron Sword', category: 'Tools & Home', price: 52, grant_item: 'iron_sword', grant_qty: 1, description: 'Masterwork blade for bonus meat yield.' },
+  { id: 'cooked_meat', name: 'Roasted Meat', category: 'Food & Farm', price: 16, grant_item: 'cooked_meat', grant_qty: 2, description: 'Warm roasted meat (x2).' },
   { id: 'bread', name: 'Warm Bakery Loaf', category: 'Food & Farm', price: 12, grant_item: 'bread', grant_qty: 2, description: 'Fresh market loaves (x2).' },
   { id: 'berries', name: 'Wild Berry Basket', category: 'Food & Farm', price: 10, grant_item: 'berries', grant_qty: 4, description: 'Sweet island berries (x4).' },
   { id: 'seeds', name: 'Wheat Seeds', category: 'Food & Farm', price: 8, grant_item: 'seeds', grant_qty: 6, description: 'Heirloom wheat seeds (x6).' },
@@ -169,6 +173,10 @@ const DEMO_SELL_PRICES: Record<string, number> = {
   obsidian: 8,
   sandstone: 4,
   sunstone: 30,
+  raw_meat: 5,
+  cooked_meat: 12,
+  hide: 14,
+  feather: 6,
 };
 
 interface CachedDemoWorld {
@@ -455,6 +463,71 @@ export class OfflineDemoSimulator {
       : `Assembled ${part.surface.replace(/_/g, ' ')} onto the Teleport Gate.`;
     npc.thought = msg;
     return { updates, message: msg };
+  }
+
+  public npcAction(action: string, params: Record<string, unknown> = {}, agentId?: string): string {
+    const ag = agentId && agentId !== 'aiden' ? this.extraAgents.find((a) => a.id === agentId) : undefined;
+    const npc = ag ?? this.state.npc;
+    const inv = npc.inventory;
+    if (action === 'craft') {
+      const recipe = String(params.recipe ?? '');
+      if (recipe === 'wooden_spear') {
+        if ((inv.wood_log ?? 0) < 1 || (inv.stone ?? 0) < 1) {
+          throw new Error('Need 1 wood log and 1 stone to craft a Spear.');
+        }
+        inv.wood_log -= 1;
+        inv.stone -= 1;
+        inv.wooden_spear = (inv.wooden_spear ?? 0) + 1;
+        npc.thought = 'Crafted a wooden spear for hunting!';
+        return npc.thought;
+      }
+      if (recipe === 'hunting_bow') {
+        if ((inv.wood_plank ?? 0) < 2) {
+          throw new Error('Need 2 wood planks to craft a Hunting Bow.');
+        }
+        inv.wood_plank -= 2;
+        inv.hunting_bow = (inv.hunting_bow ?? 0) + 1;
+        npc.thought = 'Strung a curved hunting bow!';
+        return npc.thought;
+      }
+      if (recipe === 'cooked_meat') {
+        if ((inv.raw_meat ?? 0) < 1) throw new Error('Need 1 raw meat to cook.');
+        inv.raw_meat -= 1;
+        inv.cooked_meat = (inv.cooked_meat ?? 0) + 1;
+        npc.thought = 'Roasted tender meat over the fire!';
+        return npc.thought;
+      }
+      throw new Error(`Unsupported recipe "${recipe}".`);
+    }
+    if (action === 'hunt') {
+      const weapon =
+        (inv.iron_sword ?? 0) > 0
+          ? 'iron_sword'
+          : (inv.hunting_bow ?? 0) > 0
+            ? 'hunting_bow'
+            : (inv.wooden_spear ?? 0) > 0
+              ? 'wooden_spear'
+              : null;
+      if (!weapon) {
+        throw new Error('Craft or buy a weapon (Spear, Bow, or Sword) before hunting.');
+      }
+      const huntable = new Set(['deer', 'sheep', 'fox', 'duck']);
+      const idx = this.demoEntities.findIndex((e) => huntable.has(e.kind));
+      if (idx < 0) {
+        throw new Error('No wild deer, sheep, fox, or duck on this island right now.');
+      }
+      const [prey] = this.demoEntities.splice(idx, 1);
+      const meat = prey.kind === 'deer' ? 3 : prey.kind === 'sheep' ? 2 : 1;
+      inv.raw_meat = (inv.raw_meat ?? 0) + meat;
+      if (prey.kind === 'duck') inv.feather = (inv.feather ?? 0) + 3;
+      else inv.hide = (inv.hide ?? 0) + (prey.kind === 'sheep' ? 1 : 2);
+      npc.animation = 'hunting';
+      npc.current_action = 'hunt';
+      npc.thought = `Hunted ${prey.name} (${prey.kind}) using my ${weapon.replace(/_/g, ' ')}!`;
+      npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: npc.thought });
+      return npc.thought;
+    }
+    throw new Error(`Action "${action}" unavailable.`);
   }
 
   public reset(seed = Math.floor(Math.random() * 9000) + 1000): WorldInitMessage {

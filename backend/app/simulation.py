@@ -62,14 +62,22 @@ DURATIONS = {"idle": 2, "explore": .3, "walk": .1, "forage": 2, "drink": 2.5,
              "harvest": 2, "plant_sapling": 1.5, "journal": 4,
              "gather": 3, "furnish": 3, "repair": 4, "clean": 5, "wash": 4,
              "refill": 4, "stoke": 2, "store": 2, "take": 2, "fertilize": 2,
-             "study_gate": 3, "build_gate": 1.2}
+             "study_gate": 3, "build_gate": 1.2, "hunt": 2.2}
 ANIMATION = {"chop": "chopping", "mine": "mining", "build": "building", "till": "tilling",
              "plant": "planting", "plant_sapling": "planting", "water": "watering",
              "harvest": "harvesting", "forage": "harvesting", "eat": "eating",
              "drink": "drinking", "sleep": "sleeping", "craft": "building", "journal": "thinking",
              "gather": "harvesting", "furnish": "building", "repair": "building", "clean": "tilling",
              "wash": "watering", "refill": "watering", "stoke": "building", "store": "building", "take": "building", "fertilize": "tilling",
-             "study_gate": "thinking", "build_gate": "building"}
+             "study_gate": "thinking", "build_gate": "building", "hunt": "hunting"}
+
+HUNTABLE_KINDS = {"deer", "fox", "sheep", "duck"}
+HUNT_LOOT: dict[str, dict[str, int]] = {
+    "deer": {"raw_meat": 3, "hide": 2},
+    "sheep": {"raw_meat": 2, "hide": 1, "cloth": 1},
+    "fox": {"raw_meat": 1, "hide": 2},
+    "duck": {"raw_meat": 1, "feather": 3},
+}
 
 
 def xyz(p) -> dict:
@@ -290,10 +298,11 @@ class NpcAgent:
             journal=list(self.journal),
             llm_status=dict(self.llm_status),
             tools={k:dict(durability=v,owned=self.inventory[k]) for k,v in self.household.tools.items()},
+            weapons={k: dict(durability=v, owned=self.inventory[k]) for k, v in self.household.weapons.items()},
         )
 
     def export_save(self) -> dict:
-        """Serialize individual NPC body state, needs, inventory, tools, memories and journal."""
+        """Serialize individual NPC body state, needs, inventory, tools, weapons, memories and journal."""
         return {
             "id": self.id,
             "name": self.name,
@@ -305,6 +314,7 @@ class NpcAgent:
             "needs": {k: round(float(v), 3) for k, v in self.needs.items()},
             "inventory": {k: int(v) for k, v in self.inventory.items()},
             "tools": {k: round(float(v), 3) for k, v in self.household.tools.items()},
+            "weapons": {k: round(float(v), 3) for k, v in self.household.weapons.items()},
             "current_goal": self.current_goal,
             "thought": self.thought,
             "memories": [dict(m) for m in self.memories],
@@ -343,6 +353,9 @@ class NpcAgent:
         for k, v in (data.get("tools") or {}).items():
             if k in agent.household.tools:
                 agent.household.tools[k] = float(v)
+        for k, v in (data.get("weapons") or {}).items():
+            if k in agent.household.weapons:
+                agent.household.weapons[k] = float(v)
         if "current_goal" in data:
             agent.current_goal = str(data["current_goal"])
         if "thought" in data:
@@ -410,8 +423,30 @@ class NpcAgent:
             path = self.approach(target, exact=True)
             return path is not None and self.make_job(action, target, path)
         if action == "eat":
-            food = "bread" if inv["bread"] else "berries"
+            food = "cooked_meat" if inv["cooked_meat"] else "bread" if inv["bread"] else "berries"
             return inv[food] > 0 and self.make_job(action, food=food)
+        if action == "hunt":
+            weapon = self.household.active_weapon()
+            if not weapon:
+                return False
+            req_kind = str(params.get("kind", "")).strip().lower()
+            req_id = str(params.get("entity_id", "")).strip()
+            prey = [
+                e for e in self.sim.entities
+                if e.get("kind") in HUNTABLE_KINDS
+                and (not req_kind or e.get("kind") == req_kind)
+                and (not req_id or e.get("id") == req_id)
+            ]
+            if not prey:
+                return False
+            prey.sort(key=lambda e: distance(self.position, (e["grid_pos"]["x"], e["grid_pos"]["y"], e["grid_pos"]["z"])))
+            reach_hunt = 3 if weapon == "hunting_bow" else 2
+            for ent in prey:
+                pos = (int(ent["grid_pos"]["x"]), int(ent["grid_pos"]["y"]), int(ent["grid_pos"]["z"]))
+                path = self.approach(pos, reach=reach_hunt, avoid_target=False)
+                if path is not None:
+                    return self.make_job("hunt", pos, path, entity_id=ent["id"], kind=ent["kind"], weapon=weapon)
+            return False
         if action in {"idle", "journal"}:
             return self.make_job(action)
         if action == "sleep":
@@ -574,6 +609,18 @@ class NpcAgent:
             if inv["wood_log"] < 6 and self.choose("chop", "Chopping timber and collecting seeds.", "Gather timber"):
                 return
 
+        if inv["raw_meat"] >= 1 and inv["cooked_meat"] < 4:
+            if self.choose("craft", "I have raw meat ready to roast into a warm meal.", "Cook meat", recipe="cooked_meat"):
+                return
+        if self.needs["hunger"] < 65 or (inv["berries"] + inv["bread"] + inv["cooked_meat"]) < 3:
+            has_prey = any(e.get("kind") in HUNTABLE_KINDS for e in sim.entities)
+            if has_prey:
+                weapon = self.household.active_weapon()
+                if weapon and self.choose("hunt", f"Using my {weapon.replace('_', ' ')} to hunt wild game.", "Hunt wildlife"):
+                    return
+                if not weapon and inv["wood_log"] >= 1 and inv["stone"] >= 1:
+                    if self.choose("craft", "I will craft a wooden spear so I can hunt wildlife.", "Craft hunting spear", recipe="wooden_spear"):
+                        return
         if not self.explored and self.choose("explore", "I will check the clearing and the pond before choosing where to settle.", "Explore the island"):
             return
         if inv["berries"] < 6 and self.choose("forage", "A few berries in my pocket will make building less precarious.", "Stock a little food"):
@@ -634,8 +681,26 @@ class NpcAgent:
             self.needs["thirst"] = min(100, self.needs["thirst"] + 65)
         elif action == "eat" and inv[params["food"]] > 0:
             inv[params["food"]] -= 1
-            self.needs["hunger"] = min(100, self.needs["hunger"] + (38 if params["food"] == "bread" else 18))
-            self.needs["mood"] = min(100, self.needs["mood"] + 2)
+            gain = 55 if params["food"] == "cooked_meat" else 38 if params["food"] == "bread" else 18
+            self.needs["hunger"] = min(100, self.needs["hunger"] + gain)
+            self.needs["mood"] = min(100, self.needs["mood"] + (5 if params["food"] == "cooked_meat" else 2))
+        elif action == "hunt":
+            eid = params.get("entity_id")
+            ent = next((e for e in sim.entities if e.get("id") == eid), None)
+            if ent and ent.get("kind") in HUNTABLE_KINDS:
+                sim.entities = [e for e in sim.entities if e.get("id") != eid]
+                drops = dict(HUNT_LOOT.get(ent["kind"], {"raw_meat": 1}))
+                weapon = params.get("weapon")
+                if weapon == "iron_sword":
+                    drops["raw_meat"] = drops.get("raw_meat", 0) + 1
+                for k, amt in drops.items():
+                    if k in inv:
+                        inv[k] += amt
+                self.household.wear_weapon(weapon)
+                self.needs["mood"] = min(100, self.needs["mood"] + 5)
+                loot_str = ", ".join(f"+{v} {k.replace('_', ' ')}" for k, v in drops.items())
+                self.remember(f"Hunted a {ent['kind']} using {(weapon or 'weapon').replace('_', ' ')} ({loot_str}).")
+                self.thought = f"Successful hunt! Gathered {loot_str}."
         elif action == "chop" and p and w.get(*p) == LOG:
             x, y, z = p
             logs = 0
@@ -1345,6 +1410,24 @@ class Simulation:
         self.primary.remember(f"A {kind} named {name} appeared on the island.")
 
     def update_entities(self, dt: float) -> None:
+        if self.biome == "homestead" and self.tick >= 200 and self.tick % 400 == 0 and len(self.entities) < 4:
+            wild_kind = ("deer", "sheep", "fox", "duck")[self.tick // 400 % 4]
+            spot = self._find_open_spot()
+            if spot:
+                self.entity_counter += 1
+                names = ENTITY_DEFAULT_NAMES[wild_kind]
+                self.entities.append({
+                    "id": f"ent-{self.entity_counter}",
+                    "kind": wild_kind,
+                    "name": names[(self.entity_counter - 1) % len(names)],
+                    "variant": self.entity_counter % 4,
+                    "position": {"x": float(spot[0]), "y": float(spot[1]), "z": float(spot[2])},
+                    "grid_pos": xyz(spot),
+                    "yaw": round(self.rng.uniform(0, math.tau), 3),
+                    "animation": "idle",
+                    "target": None,
+                    "wait": 1.2,
+                })
         for ent in self.entities:
             pos = ent["position"]
             gx, gy, gz = ent["grid_pos"]["x"], ent["grid_pos"]["y"], ent["grid_pos"]["z"]

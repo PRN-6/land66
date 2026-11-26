@@ -618,6 +618,25 @@ export function App() {
     [selectedAgentId],
   );
 
+  const handleNpcAction = useCallback(
+    async (action: string, params?: Record<string, unknown>, agentId?: string) => {
+      try {
+        if (connectionModeRef.current === 'live') {
+          const res = await backendApi.npcAction(action, params, agentId ?? selectedAgentId);
+          setWorldState(res.state);
+        } else {
+          demoSim.npcAction(action, params, agentId ?? selectedAgentId);
+          const next = demoSim.getState();
+          sceneRef.current?.applyTickUpdate([], next);
+          setWorldState(next);
+        }
+      } catch (err) {
+        notifyError(err instanceof Error ? err.message : 'Action failed');
+      }
+    },
+    [notifyError, selectedAgentId],
+  );
+
   return (
     <div className="relative w-full h-full overflow-hidden bg-neutral-950">
       <div ref={viewportRef} className="absolute inset-0 w-full h-full" />
@@ -676,6 +695,7 @@ export function App() {
         onSelectAgent={handleSelectAgent}
         onOpenBrainForAgent={handleOpenBrainForAgent}
         onDeleteAgent={handleDeleteAgent}
+        onNpcAction={handleNpcAction}
       />
 
       <GodDock
