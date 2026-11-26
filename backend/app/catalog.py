@@ -92,7 +92,7 @@ RECIPES = {
     "compost": recipe({"fiber": 3}, {"compost": 2}, 4, "compost_bin"),
     "gold_ingot": recipe({"gold_ore": 2, "coal": 1}, {"gold_ingot": 2}, 6),
     "copper_ingot": recipe({"copper_ore": 2, "coal": 1}, {"copper_ingot": 2}, 5),
-    "sunstone": recipe({"crystal": 2, "gold_ingot": 1}, {"sunstone": 1}, 5, "crafting_bench"),
+    "sunstone": recipe({"crystal": 1, "gold_ore": 1}, {"sunstone": 1}, 4),
 }
 
 FIXTURES = {
@@ -111,7 +111,7 @@ REPAIRS = {
     "foundation": {"stone": 2},
     "furniture": {"wood_plank": 1, "cloth": 1},
 }
-RESOURCE_KINDS = ("fiber", "clay", "sand", "iron_ore", "coal", "gold_ore", "crystal", "copper_ore")
+RESOURCE_KINDS = ("fiber", "clay", "sand", "iron_ore", "coal", "gold_ore", "crystal", "copper_ore", "obsidian", "marble")
 TOOL_FOR_ACTION = {"chop": "axe", "mine": "pickaxe", "gather": "pickaxe", "build": "hammer", "repair": "hammer"}
 
 

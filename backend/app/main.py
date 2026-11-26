@@ -130,6 +130,8 @@ class Runtime:
             raise ValueError("world must be 'homestead' or 'market'")
         if target_world == self.active_world_id:
             return self.sim.snapshot()
+        if target_world == "market" and not self.worlds["homestead"].gate_unlocked:
+            raise PermissionError("Decipher the 3 runes and build the 7-block Sky Teleport Gate on Homestead first.")
         await self.cancel_thinking()
         src = self.sim
         dst = self.worlds[target_world]
@@ -491,9 +493,80 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         target = str(req.get("world", "")).strip().lower()
         try:
             snap = await rt.switch_world(target)
+        except PermissionError as err:
+            raise HTTPException(403, str(err))
         except ValueError as err:
             raise HTTPException(422, str(err))
         return {"ok": True, "world": target, "state": snap}
+
+    @app.post("/api/gate/decipher")
+    def gate_decipher(req: dict):
+        rt = runtime()
+        home_sim = rt.worlds["homestead"]
+        rune = str(req.get("rune", "")).strip()
+        answer = str(req.get("answer", "")).strip()
+        try:
+            correct, feedback = home_sim.decipher_gate_rune(rune, answer)
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        if rt.active_world_id == "homestead":
+            rt.broadcast_tick()
+        return {"ok": True, "correct": correct, "feedback": feedback, "gate": home_sim.gate_snapshot(), "state": rt.sim.snapshot()}
+
+    @app.post("/api/gate/study")
+    def gate_study(req: dict | None = None):
+        rt = runtime()
+        if rt.active_world_id != "homestead":
+            raise HTTPException(422, "Travel to Homestead Island to study the ruined gate plinth.")
+        agent_id = (req or {}).get("agent_id")
+        ag = rt.sim._resolve_agent(agent_id)
+        if rt.sim.gate_discovered:
+            return {"ok": True, "message": "All 3 Teleport Gate runes are already deciphered!", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+        started = ag.start_action("study_gate")
+        if not started:
+            raise HTTPException(422, f"{ag.name} could not find a clear path to the Teleport Gate plinth.")
+        rt.broadcast_tick()
+        return {"ok": True, "message": f"{ag.name} is walking over to study the Ancient Gate ruins.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+
+    @app.post("/api/gate/build")
+    def gate_build(req: dict | None = None):
+        rt = runtime()
+        if rt.active_world_id != "homestead":
+            raise HTTPException(422, "Switch to Homestead Island to assemble the Teleport Gate.")
+        body = req or {}
+        mode = str(body.get("mode", "place")).strip().lower()
+        agent_id = body.get("agent_id")
+        try:
+            if mode == "npc":
+                ag = rt.sim._resolve_agent(agent_id)
+                if not rt.sim.gate_discovered:
+                    if ag.start_action("study_gate"):
+                        rt.broadcast_tick()
+                        return {"ok": True, "message": f"{ag.name} is studying the Gate runes.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                nxt = rt.sim.next_gate_block()
+                if not nxt:
+                    return {"ok": True, "message": "Teleport Gate is already complete!", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                if ag.inventory.get(nxt.material, 0) >= nxt.amount and ag.start_action("build_gate"):
+                    rt.broadcast_tick()
+                    return {"ok": True, "message": f"{ag.name} is assembling {nxt.surface_material.replace('_', ' ')} onto the gate.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                if nxt.material == "sunstone":
+                    if ag.inventory.get("crystal", 0) >= 1 and ag.inventory.get("gold_ore", 0) >= 1 and ag.start_action("craft", {"recipe": "sunstone"}):
+                        rt.broadcast_tick()
+                        return {"ok": True, "message": f"{ag.name} is forging a Sunstone core from Crystal + Gold Ore.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                    target_res = "gold_ore" if ag.inventory.get("gold_ore", 0) < 1 else "crystal"
+                    if ag.start_action("gather", {"resource": target_res}):
+                        rt.broadcast_tick()
+                        return {"ok": True, "message": f"{ag.name} is gathering {target_res.replace('_', ' ')} to craft Sunstone.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                if ag.start_action("gather", {"resource": nxt.material}):
+                    rt.broadcast_tick()
+                    return {"ok": True, "message": f"{ag.name} is gathering {nxt.material.replace('_', ' ')} for the Gate.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                raise ValueError(f"{ag.name} cannot reach more {nxt.material.replace('_', ' ')} nodes right now.")
+            placed = rt.sim.assemble_gate_block(agent_id)
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        rt.broadcast_tick()
+        msg = "Sky Teleport Gate activated! Travel to Sky Market is unlocked." if rt.sim.gate_unlocked else f"Added {placed.surface_material.replace('_', ' ')} to the Teleport Gate."
+        return {"ok": True, "message": msg, "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
 
     @app.get("/api/market/catalog")
     def get_market_catalog():

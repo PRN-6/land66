@@ -18,6 +18,7 @@ import {
   type SaveSlotSummary,
   type ShopItemDef,
   type SimSpeed,
+  type TeleportGateState,
   type WeatherType,
   type WorldEntity,
   type WorldInitMessage,
@@ -183,11 +184,26 @@ interface CachedDemoWorld {
   agentCounter: number;
 }
 
+const DEMO_GATE_ARCH: Array<{ x: number; y: number; z: number; item: string; surface: string }> = [
+  { x: 10, y: 11, z: 14, item: 'obsidian', surface: 'obsidian' },
+  { x: 10, y: 11, z: 16, item: 'obsidian', surface: 'obsidian' },
+  { x: 10, y: 12, z: 14, item: 'marble', surface: 'marble' },
+  { x: 10, y: 12, z: 16, item: 'marble', surface: 'marble' },
+  { x: 10, y: 13, z: 14, item: 'crystal', surface: 'crystal_vein' },
+  { x: 10, y: 13, z: 16, item: 'crystal', surface: 'crystal_vein' },
+  { x: 10, y: 13, z: 15, item: 'sunstone', surface: 'sunstone' },
+];
+
 export class OfflineDemoSimulator {
   private blocks = new Uint8Array(WORLD_VOLUME);
   private blockMeta = new Uint8Array(WORLD_VOLUME);
   private blockMaterials: string[] = new Array(WORLD_VOLUME).fill('');
   private activeWorldId: FloatingWorldId = 'homestead';
+  private gateClues: { anchor: boolean; conduit: boolean; core: boolean } = {
+    anchor: false,
+    conduit: false,
+    core: false,
+  };
   private cachedWorlds: Partial<Record<FloatingWorldId, CachedDemoWorld>> = {};
   private rng = mulberry32(6601);
   private state: WorldStateSnapshot;
@@ -320,7 +336,125 @@ export class OfflineDemoSimulator {
     );
     this.state.agents = [primaryAgent, ...extras];
     this.state.stats.agents_count = this.state.agents.length;
+    this.state.gate = this.getGateState();
     return structuredClone(this.state);
+  }
+
+  public getGateState(): TeleportGateState {
+    if (this.activeWorldId === 'market') {
+      return {
+        discovered: true,
+        unlocked: true,
+        progress: 100,
+        clues: { anchor: true, conduit: true, core: true },
+        built_count: 7,
+        total_count: 7,
+        missing_items: {},
+        next_material: null,
+        next_surface: null,
+        position: { x: 10, y: 11, z: 15 },
+      };
+    }
+    const missing: Record<string, number> = {};
+    let built = 0;
+    let nextMat: string | null = null;
+    let nextSurf: string | null = null;
+    for (const part of DEMO_GATE_ARCH) {
+      const idx = blockIndex(part.x, part.y, part.z);
+      const ok = this.blocks[idx] === BlockId.STONE && this.blockMaterials[idx] === part.surface;
+      if (ok) {
+        built += 1;
+      } else {
+        missing[part.item] = (missing[part.item] ?? 0) + 1;
+        if (!nextMat) {
+          nextMat = part.item;
+          nextSurf = part.surface;
+        }
+      }
+    }
+    const discovered = this.gateClues.anchor && this.gateClues.conduit && this.gateClues.core;
+    const unlocked = built === DEMO_GATE_ARCH.length;
+    return {
+      discovered,
+      unlocked,
+      progress: Number(((100 * built) / DEMO_GATE_ARCH.length).toFixed(1)),
+      clues: { ...this.gateClues },
+      built_count: built,
+      total_count: DEMO_GATE_ARCH.length,
+      missing_items: missing,
+      next_material: nextMat,
+      next_surface: nextSurf,
+      position: { x: 10, y: 11, z: 15 },
+    };
+  }
+
+  public decipherGateRune(rune: 'anchor' | 'conduit' | 'core', answer: string): { correct: boolean; feedback: string } {
+    const answers: Record<'anchor' | 'conduit' | 'core', [string, string, string]> = {
+      anchor: ['obsidian', 'Anchored! Obsidian anchors the portal frame.', 'Hint: Dark volcanic rock from deep island stone.'],
+      conduit: ['crystal', 'Unlocked! White Marble columns topped with glowing Crystal channel sky energy.', 'Hint: Sea-blue glowing crystal gem.'],
+      core: ['sunstone', 'Deciphered! A radiant Sunstone keystone completes the circuit.', 'Hint: Radiant amber light stone crafted from Crystal + Gold.'],
+    };
+    const [expected, okMsg, hintMsg] = answers[rune];
+    if (answer.trim().toLowerCase() === expected) {
+      this.gateClues[rune] = true;
+      this.state.npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: okMsg });
+      return { correct: true, feedback: okMsg };
+    }
+    return { correct: false, feedback: hintMsg };
+  }
+
+  public studyGateWithNpc(agentId?: string): string {
+    const ag = agentId && agentId !== 'aiden' ? this.extraAgents.find((a) => a.id === agentId) : undefined;
+    const npc = ag ?? this.state.npc;
+    for (const r of ['anchor', 'conduit', 'core'] as const) {
+      if (!this.gateClues[r]) {
+        this.gateClues[r] = true;
+        const msg = `${npc.name} studied the ruined plinth and unlocked Rune (${r}).`;
+        npc.thought = msg;
+        npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: msg });
+        return msg;
+      }
+    }
+    return 'All 3 Teleport Gate runes are already deciphered!';
+  }
+
+  public buildGate(mode: 'place' | 'npc', agentId?: string): { updates: BlockUpdate[]; message: string } {
+    if (!this.gateClues.anchor || !this.gateClues.conduit || !this.gateClues.core) {
+      if (mode === 'npc') {
+        const msg = this.studyGateWithNpc(agentId);
+        return { updates: [], message: msg };
+      }
+      throw new Error('Decipher all 3 Teleport Gate runes first.');
+    }
+    const ag = agentId && agentId !== 'aiden' ? this.extraAgents.find((a) => a.id === agentId) : undefined;
+    const npc = ag ?? this.state.npc;
+    const inv = npc.inventory;
+    const part = DEMO_GATE_ARCH.find((p) => {
+      const idx = blockIndex(p.x, p.y, p.z);
+      return !(this.blocks[idx] === BlockId.STONE && this.blockMaterials[idx] === p.surface);
+    });
+    if (!part) return { updates: [], message: 'Sky Teleport Gate is already complete!' };
+
+    if ((inv[part.item] ?? 0) < 1) {
+      if (mode === 'npc') {
+        inv[part.item] = (inv[part.item] ?? 0) + 1;
+        const msg = `${npc.name} gathered 1 ${part.item.replace(/_/g, ' ')} from island outcrops for the Gate.`;
+        npc.thought = msg;
+        return { updates: [], message: msg };
+      }
+      throw new Error(`Need 1 ${part.item.replace(/_/g, ' ')} in inventory (try Gather & Build with NPC).`);
+    }
+
+    inv[part.item] -= 1;
+    this.setBlock(part.x, part.y, part.z, BlockId.STONE, 0, part.surface);
+    this.state.stats.blocks_placed += 1;
+    const updates: BlockUpdate[] = [{ x: part.x, y: part.y, z: part.z, block: BlockId.STONE, meta: 0, material: part.surface }];
+    const unlocked = this.getGateState().unlocked;
+    const msg = unlocked
+      ? 'Sky Teleport Gate activated! Travel to Sky Market is unlocked.'
+      : `Assembled ${part.surface.replace(/_/g, ' ')} onto the Teleport Gate.`;
+    npc.thought = msg;
+    return { updates, message: msg };
   }
 
   public reset(seed = Math.floor(Math.random() * 9000) + 1000): WorldInitMessage {
@@ -330,10 +464,11 @@ export class OfflineDemoSimulator {
     this.extraAgents = [];
     this.entityCounter = 0;
     this.agentCounter = 1;
-    if (this.activeWorldId === 'market') {
-      this.generateMarketIsland(seed);
-    } else {
+    if (this.activeWorldId === 'homestead') {
+      this.gateClues = { anchor: false, conduit: false, core: false };
       this.generateIsland(seed);
+    } else {
+      this.generateMarketIsland(seed);
     }
     return this.getInitMessage();
   }
@@ -341,6 +476,9 @@ export class OfflineDemoSimulator {
   public switchWorld(target: FloatingWorldId): WorldInitMessage {
     if (target === this.activeWorldId) {
       return this.getInitMessage();
+    }
+    if (target === 'market' && !this.getGateState().unlocked) {
+      throw new Error('Decipher and build the Sky Teleport Gate on Homestead Island first.');
     }
     const prevCoins = this.state.coins ?? 250;
     const prevInv = { ...this.state.npc.inventory };
@@ -616,8 +754,18 @@ export class OfflineDemoSimulator {
     this.state.npc.grid_pos = { x: 15, y: spawnSy + 1, z: 15 };
     this.state.stats.trees_count = treeCount;
 
-    const hx = 10;
-    const hz = 11;
+    // Ancient Ruined Gate Plinth at (10, 10, 14..16)
+    this.setBlock(10, 10, 14, BlockId.STONE, 0, 'obsidian');
+    this.setBlock(10, 10, 15, BlockId.STONE, 0, 'marble');
+    this.setBlock(10, 10, 16, BlockId.STONE, 0, 'obsidian');
+    for (let y = 11; y <= 13; y++) {
+      for (const gz of [14, 15, 16]) {
+        this.setBlock(10, y, gz, BlockId.AIR);
+      }
+    }
+
+    const hx = 12;
+    const hz = 12;
     const hy = Math.max(10, this.surfaceY[hz * WORLD_WIDTH + hx]) + 1;
     for (let x = hx; x <= hx + 4; x++) {
       for (let z = hz; z <= hz + 4; z++) {
@@ -832,6 +980,17 @@ export class OfflineDemoSimulator {
     ]) {
       this.setBlock(lx, 11, lz, BlockId.TORCH, 0, 'copper_lantern');
     }
+
+    // Active Return Sky Gate at South Plaza (15..17, 10..13, 25)
+    this.setBlock(15, 10, 25, BlockId.STONE, 0, 'obsidian');
+    this.setBlock(16, 10, 25, BlockId.STONE, 0, 'marble');
+    this.setBlock(17, 10, 25, BlockId.STONE, 0, 'obsidian');
+    for (const gx of [15, 17]) {
+      this.setBlock(gx, 11, 25, BlockId.STONE, 0, 'obsidian');
+      this.setBlock(gx, 12, 25, BlockId.STONE, 0, 'marble');
+      this.setBlock(gx, 13, 25, BlockId.STONE, 0, 'crystal_vein');
+    }
+    this.setBlock(16, 13, 25, BlockId.STONE, 0, 'sunstone');
 
     this.state.npc.position = { x: 16, y: 11, z: 22 };
     this.state.npc.grid_pos = { x: 16, y: 11, z: 22 };
@@ -1420,6 +1579,7 @@ export class OfflineDemoSimulator {
       save_version: 1,
       biome: this.activeWorldId,
       coins: state.coins ?? 250,
+      gate_clues: { ...this.gateClues },
       name: (name ?? `Day ${state.day} (${state.clock_str})`).trim().slice(0, 64),
       saved_at: new Date().toISOString(),
       seed: state.seed,
@@ -1524,6 +1684,15 @@ export class OfflineDemoSimulator {
     const rawBiome = String((payload as Record<string, unknown>).biome ?? 'homestead');
     const biome: FloatingWorldId = rawBiome === 'market' ? 'market' : 'homestead';
     const coins = Math.max(0, Number((payload as Record<string, unknown>).coins ?? 250));
+    const rawClues = (payload as Record<string, unknown>).gate_clues as Record<string, unknown> | undefined;
+    this.gateClues =
+      biome === 'market'
+        ? { anchor: true, conduit: true, core: true }
+        : {
+            anchor: Boolean(rawClues?.anchor),
+            conduit: Boolean(rawClues?.conduit),
+            core: Boolean(rawClues?.core),
+          };
     this.activeWorldId = biome;
     this.state = this.createInitialState(seed, biome, coins);
     this.state.tick = Math.max(0, Number(payload.tick ?? 0));

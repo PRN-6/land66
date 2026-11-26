@@ -25,6 +25,7 @@ import { InspectorDrawer } from './components/InspectorDrawer';
 import { LlmModal } from './components/LlmModal';
 import { SaveModal } from './components/SaveModal';
 import { ShopModal } from './components/ShopModal';
+import { GateModal } from './components/GateModal';
 import { InspectToast } from './components/InspectToast';
 import { NpcThoughtOverlay } from './components/NpcThoughtOverlay';
 
@@ -53,6 +54,7 @@ export function App() {
   const [llmModalOpen, setLlmModalOpen] = useState(false);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [shopModalOpen, setShopModalOpen] = useState(false);
+  const [gateModalOpen, setGateModalOpen] = useState(false);
   const [marketCatalog, setMarketCatalog] = useState<MarketCatalogPayload | null>(null);
   const [saveSlots, setSaveSlots] = useState<SaveSlotSummary[]>([]);
   const [savesLoading, setSavesLoading] = useState(false);
@@ -484,6 +486,10 @@ export function App() {
   const handleSwitchWorld = useCallback(
     async (world: FloatingWorldId) => {
       try {
+        if (world === 'market' && !(worldState.gate?.unlocked ?? false)) {
+          setGateModalOpen(true);
+          return;
+        }
         if (connectionModeRef.current === 'live') {
           await backendApi.switchWorld(world);
         } else {
@@ -495,10 +501,68 @@ export function App() {
         }
         setInspectTarget(null);
       } catch (err) {
-        notifyError(err instanceof Error ? err.message : 'Failed to switch world');
+        const msg = err instanceof Error ? err.message : 'Failed to switch world';
+        if (msg.includes('403') || msg.toLowerCase().includes('gate')) {
+          setGateModalOpen(true);
+        } else {
+          notifyError(msg);
+        }
       }
     },
-    [notifyError],
+    [notifyError, worldState.gate?.unlocked],
+  );
+
+  const handleGateDecipher = useCallback(
+    async (rune: 'anchor' | 'conduit' | 'core', answer: string) => {
+      if (connectionModeRef.current === 'live') {
+        const res = await backendApi.gateDecipher(rune, answer);
+        setWorldState(res.state);
+        return { correct: res.correct, feedback: res.feedback };
+      }
+      const res = demoSim.decipherGateRune(rune, answer);
+      const next = demoSim.getState();
+      sceneRef.current?.applyTickUpdate([], next);
+      setWorldState(next);
+      return res;
+    },
+    [],
+  );
+
+  const handleGateStudy = useCallback(async (): Promise<string | null> => {
+    try {
+      if (connectionModeRef.current === 'live') {
+        const res = await backendApi.gateStudy(selectedAgentId);
+        setWorldState(res.state);
+        return res.message;
+      }
+      const msg = demoSim.studyGateWithNpc(selectedAgentId);
+      const next = demoSim.getState();
+      sceneRef.current?.applyTickUpdate([], next);
+      setWorldState(next);
+      return msg;
+    } catch (err) {
+      return err instanceof Error ? err.message : 'Failed to study ruins';
+    }
+  }, [selectedAgentId]);
+
+  const handleGateBuild = useCallback(
+    async (mode: 'place' | 'npc'): Promise<string | null> => {
+      try {
+        if (connectionModeRef.current === 'live') {
+          const res = await backendApi.gateBuild(mode, selectedAgentId);
+          setWorldState(res.state);
+          return res.message;
+        }
+        const { updates, message } = demoSim.buildGate(mode, selectedAgentId);
+        const next = demoSim.getState();
+        sceneRef.current?.applyTickUpdate(updates, next);
+        setWorldState(next);
+        return message;
+      } catch (err) {
+        return err instanceof Error ? err.message : 'Failed to build gate block';
+      }
+    },
+    [selectedAgentId],
   );
 
   const handleOpenShopModal = useCallback(async () => {
@@ -578,6 +642,7 @@ export function App() {
           onToggleThoughtBubble={() => setShowThoughtBubble((v) => !v)}
           onTogglePath={handleTogglePath}
           onToggleInspector={() => setInspectorOpen((v) => !v)}
+          onOpenGateModal={() => setGateModalOpen(true)}
           onOpenShopModal={handleOpenShopModal}
           onOpenSavesModal={handleOpenSavesModal}
           onOpenLlmModal={() => {
@@ -634,6 +699,36 @@ export function App() {
         agents={agents}
         onClose={() => setInspectTarget(null)}
         onOpenShop={handleOpenShopModal}
+        onOpenGate={() => setGateModalOpen(true)}
+      />
+
+      <GateModal
+        open={gateModalOpen}
+        onClose={() => setGateModalOpen(false)}
+        worldId={worldState.world_id ?? 'homestead'}
+        gate={
+          worldState.gate ?? {
+            discovered: false,
+            unlocked: false,
+            progress: 0,
+            clues: { anchor: false, conduit: false, core: false },
+            built_count: 0,
+            total_count: 7,
+            missing_items: { obsidian: 2, marble: 2, crystal: 2, sunstone: 1 },
+            next_material: null,
+            next_surface: null,
+            position: { x: 10, y: 11, z: 15 },
+          }
+        }
+        selectedAgent={selectedAgent}
+        onDecipher={handleGateDecipher}
+        onStudyWithNpc={handleGateStudy}
+        onBuildGate={handleGateBuild}
+        onEnterPortal={async () => {
+          setGateModalOpen(false);
+          const nextWorld: FloatingWorldId = worldState.world_id === 'market' ? 'homestead' : 'market';
+          await handleSwitchWorld(nextWorld);
+        }}
       />
 
       <ShopModal
@@ -643,7 +738,10 @@ export function App() {
         coins={worldState.coins ?? 250}
         selectedAgent={selectedAgent}
         catalog={marketCatalog}
-        onTravelMarket={() => handleSwitchWorld('market')}
+        onTravelMarket={async () => {
+          setShopModalOpen(false);
+          await handleSwitchWorld('market');
+        }}
         onBuy={handleMarketBuy}
         onSell={handleMarketSell}
       />

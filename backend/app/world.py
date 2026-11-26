@@ -277,6 +277,17 @@ class World:
                             if self.get(*lp) == LEAVES:
                                 self.set_material(lp, species_leaf)
 
+        # Activated Return Teleport Gate at South Sky Bridge (15..17, 10..13, 25)
+        for gx, mat in ((15, "obsidian"), (16, "marble"), (17, "obsidian")):
+            self.set(gx, 10, 25, STONE)
+            self.set_material((gx, 10, 25), mat)
+        for gx in (15, 17):
+            for gy, mat in ((11, "obsidian"), (12, "marble"), (13, "crystal_vein")):
+                self.set(gx, gy, 25, STONE)
+                self.set_material((gx, gy, 25), mat)
+        self.set(16, 13, 25, STONE)
+        self.set_material((16, 13, 25), "sunstone")
+
     def grow_tree(self, p: Pos) -> bool:
         x, y, z = p
         if self.get(x, y - 1, z) not in {GRASS, DIRT}:
@@ -332,16 +343,27 @@ class World:
                     self.add_resource(kind, p, 60)
         stone = [p for p in self.positions(STONE) if p[1]>=10 and self.get(p[0],p[1]+1,p[2])==AIR]
         stone.sort(key=lambda p: (abs(p[0]-16)+abs(p[2]-20),p))
-        for i,p in enumerate(stone[:16]):
+        for i, p in enumerate(stone[:6]):
             kind = "iron_ore" if i % 2 else "coal"
-            self.set_material(p, "iron_vein" if kind=="iron_ore" else "coal_vein")
-            self.add_resource(kind,p,40)
-        for i, p in enumerate(stone[16:25]):
-            kind, mat, cap = (("gold_ore", "gold_vein", 24), ("crystal", "crystal_vein", 20), ("copper_ore", "copper_vein", 32))[i % 3]
+            self.set_material(p, "iron_vein" if kind == "iron_ore" else "coal_vein")
+            self.add_resource(kind, p, 40)
+        rare_nodes = (
+            ("gold_ore", "gold_vein", 24),
+            ("crystal", "crystal_vein", 20),
+            ("copper_ore", "copper_vein", 32),
+            ("marble", "marble", 16),
+            ("obsidian", "obsidian", 16),
+        )
+        for i, p in enumerate(stone[6:16]):
+            kind, mat, cap = rare_nodes[i % len(rare_nodes)]
             self.set_material(p, mat)
             self.add_resource(kind, p, cap)
-        for p in stone[25:28]:
-            self.set_material(p, "marble")
+        # Ancient Teleport Gate Ruin Plinth at West Clearing Edge (stone only -> contract clean)
+        for gz, mat in ((14, "obsidian"), (15, "marble"), (16, "obsidian")):
+            self.set(10, 10, gz, STONE)
+            self.set_material((10, 10, gz), mat)
+            if self.get(10, 11, gz) != AIR:
+                self.set(10, 11, gz, AIR)
         deep_crust = [p for p in self.positions(STONE) if p[1] <= 5]
         rng.shuffle(deep_crust)
         for p in deep_crust[:18]:

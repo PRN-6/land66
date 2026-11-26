@@ -61,13 +61,15 @@ DURATIONS = {"idle": 2, "explore": .3, "walk": .1, "forage": 2, "drink": 2.5,
              "build": .8, "till": 1.5, "plant": 1, "water": 1.5,
              "harvest": 2, "plant_sapling": 1.5, "journal": 4,
              "gather": 3, "furnish": 3, "repair": 4, "clean": 5, "wash": 4,
-             "refill": 4, "stoke": 2, "store": 2, "take": 2, "fertilize": 2}
+             "refill": 4, "stoke": 2, "store": 2, "take": 2, "fertilize": 2,
+             "study_gate": 3, "build_gate": 1.2}
 ANIMATION = {"chop": "chopping", "mine": "mining", "build": "building", "till": "tilling",
              "plant": "planting", "plant_sapling": "planting", "water": "watering",
              "harvest": "harvesting", "forage": "harvesting", "eat": "eating",
              "drink": "drinking", "sleep": "sleeping", "craft": "building", "journal": "thinking",
              "gather": "harvesting", "furnish": "building", "repair": "building", "clean": "tilling",
-             "wash": "watering", "refill": "watering", "stoke": "building", "store": "building", "take": "building", "fertilize": "tilling"}
+             "wash": "watering", "refill": "watering", "stoke": "building", "store": "building", "take": "building", "fertilize": "tilling",
+             "study_gate": "thinking", "build_gate": "building"}
 
 
 def xyz(p) -> dict:
@@ -103,6 +105,26 @@ class BlueprintBlock:
     stage: str
     material: str
     amount: int = 1
+    surface_material: str = ""
+
+
+def gate_blueprint() -> list[BlueprintBlock]:
+    return [
+        BlueprintBlock((10, 11, 14), STONE, "gate_base", "obsidian", 1, "obsidian"),
+        BlueprintBlock((10, 11, 16), STONE, "gate_base", "obsidian", 1, "obsidian"),
+        BlueprintBlock((10, 12, 14), STONE, "gate_columns", "marble", 1, "marble"),
+        BlueprintBlock((10, 12, 16), STONE, "gate_columns", "marble", 1, "marble"),
+        BlueprintBlock((10, 13, 14), STONE, "gate_conduit", "crystal", 1, "crystal_vein"),
+        BlueprintBlock((10, 13, 16), STONE, "gate_conduit", "crystal", 1, "crystal_vein"),
+        BlueprintBlock((10, 13, 15), STONE, "gate_core", "sunstone", 1, "sunstone"),
+    ]
+
+
+GATE_RUNE_ANSWERS: dict[str, tuple[str, str]] = {
+    "anchor": ("obsidian", "Anchored! Obsidian resists the gravitational shear of sky portals."),
+    "conduit": ("crystal", "Unlocked! Polished White Marble columns topped with Crystal Veins channel energy."),
+    "core": ("sunstone", "Deciphered! A radiant Sunstone keystone completes the portal circuit (craft from Crystal + Gold Ore)."),
+}
 
 
 def house_blueprint() -> list[BlueprintBlock]:
@@ -404,11 +426,29 @@ class NpcAgent:
             candidates = self.sim.tree_bases()
         elif action == "mine":
             reserved = {tuple(n["position"][k] for k in ("x","y","z")) for n in w.resource_nodes.values() if n["remaining"] > 0}
+            reserved |= {b.pos for b in self.sim.gate_blueprint} | {(10, 10, 14), (10, 10, 15), (10, 10, 16)}
             candidates = [p for p in w.positions(STONE) if p[1] >= 10
                           and p not in reserved
                           and p != (self.grid_pos[0], self.grid_pos[1] - 1, self.grid_pos[2])
                           and any(w.get(p[0]+dx, p[1], p[2]+dz) == AIR for dx, dz in ((1,0),(-1,0),(0,1),(0,-1))) ]
             avoid = True
+        elif action == "study_gate":
+            if self.sim.biome != "homestead" or self.sim.gate_discovered:
+                return False
+            result = self.nearest_reachable([(10, 11, 15)], 2, avoid_target=True)
+            if not result:
+                return False
+            return self.make_job(action, *result)
+        elif action == "build_gate":
+            if self.sim.biome != "homestead" or not self.sim.gate_discovered:
+                return False
+            b = self.sim.next_gate_block()
+            if not b or inv.get(b.material, 0) < b.amount:
+                return False
+            result = self.nearest_reachable([b.pos], 3, avoid_target=True)
+            if not result:
+                return False
+            return self.make_job(action, *result, blueprint=b)
         elif action == "build":
             b = self.sim.next_build()
             if not b or inv[b.material] < b.amount:
@@ -649,6 +689,25 @@ class NpcAgent:
             self.remember("Planted a young tree to renew the forest.")
         elif action == "journal":
             self.write_journal()
+        elif action == "study_gate":
+            for rune in ("anchor", "conduit", "core"):
+                if not sim.gate_clues.get(rune):
+                    sim.gate_clues[rune] = True
+                    msg = GATE_RUNE_ANSWERS[rune][1]
+                    self.remember(f"Teleport Ruin Study: {msg}")
+                    self.thought = msg
+                    if sim.gate_discovered:
+                        self.write_journal("I deciphered the Ancient Teleport Gate! Frame: Obsidian pillars, Marble columns, Crystal conduits, and a Sunstone keystone.")
+                    break
+        elif action == "build_gate":
+            b = params["blueprint"]
+            if not sim.gate_block_matches(b) and inv.get(b.material, 0) >= b.amount:
+                inv[b.material] -= b.amount
+                sim.change_block(b.pos, b.block, material=b.surface_material)
+                self.remember(f"Placed {b.surface_material.replace('_', ' ')} on the Sky Teleport Gate.")
+                if sim.gate_unlocked:
+                    self.remember("The Sky Teleport Gate hums with blue-gold portal light! Sky Market is open.")
+                    self.thought = "The Sky Teleport Gate is awake! We can visit Sky Market!"
         self.household.wear_tool(action)
         self.job, self.target, self.path = None, None, []
         self.animation, self.current_action, self.progress = "idle", "idle", 0
@@ -719,6 +778,12 @@ class Simulation:
         self.paused, self.speed, self.weather = False, 1, "clear"
         self.weather_override = False
         self.blueprint = [] if self.biome == "market" else house_blueprint()
+        self.gate_blueprint = [] if self.biome == "market" else gate_blueprint()
+        self.gate_clues: dict[str, bool] = (
+            {"anchor": True, "conduit": True, "core": True}
+            if self.biome == "market"
+            else {"anchor": False, "conduit": False, "core": False}
+        )
         self.farm_sites = [] if self.biome == "market" else [(x, 10, z) for x in (19, 20) for z in range(18, 22)]
         self.crop_age: dict[Pos, float] = {}
         self.wet_age: dict[Pos, float] = {}
@@ -885,6 +950,82 @@ class Simulation:
             return 100.0
         return 100 * sum(self.blueprint_matches(b) for b in self.blueprint) / len(self.blueprint)
 
+    def gate_block_matches(self, b: BlueprintBlock) -> bool:
+        if self.world.get(*b.pos) != b.block:
+            return False
+        if b.surface_material:
+            return self.world.materials[self.world.index(*b.pos)] == b.surface_material
+        return True
+
+    def next_gate_block(self) -> BlueprintBlock | None:
+        return next((b for b in self.gate_blueprint if not self.gate_block_matches(b)), None)
+
+    @property
+    def gate_discovered(self) -> bool:
+        return self.biome == "market" or all(self.gate_clues.values())
+
+    def gate_progress(self) -> float:
+        if not self.gate_blueprint:
+            return 100.0
+        return 100.0 * sum(self.gate_block_matches(b) for b in self.gate_blueprint) / len(self.gate_blueprint)
+
+    @property
+    def gate_unlocked(self) -> bool:
+        return self.biome == "market" or self.gate_progress() >= 100.0
+
+    def decipher_gate_rune(self, rune: str, answer: str) -> tuple[bool, str]:
+        rune_key = rune.strip().lower()
+        if rune_key not in GATE_RUNE_ANSWERS:
+            raise ValueError("Unknown gate rune")
+        expected, success_msg = GATE_RUNE_ANSWERS[rune_key]
+        clean = answer.strip().lower()
+        if clean == expected:
+            self.gate_clues[rune_key] = True
+            self.primary.remember(f"Deciphered Teleport Gate rune ({rune_key}): {expected}.")
+            return True, success_msg
+        hints = {
+            "anchor": "Hint: Look for dark volcanic stone mined from deep rock strata or coastal outcrops.",
+            "conduit": "Hint: Combine luminous blue cavern gems (Crystal) paired with pale sculpted stone pillars.",
+            "core": "Hint: Look for the warm radiant stone crafted from Crystal + Gold Ore.",
+        }
+        return False, hints[rune_key]
+
+    def assemble_gate_block(self, agent_id: str | None = None) -> BlueprintBlock:
+        if not self.gate_discovered:
+            raise ValueError("Decipher all 3 Teleport Gate runes first before building.")
+        b = self.next_gate_block()
+        if not b:
+            raise ValueError("Teleport Gate is already complete!")
+        ag = self._resolve_agent(agent_id)
+        have = ag.inventory.get(b.material, 0)
+        if have < b.amount:
+            raise ValueError(f"{ag.name} needs {b.amount} {b.material.replace('_', ' ')} (has {have}). Gather from island outcrops or study clues.")
+        ag.inventory[b.material] -= b.amount
+        self.change_block(b.pos, b.block, material=b.surface_material)
+        ag.remember(f"Assembled {b.surface_material.replace('_', ' ')} onto the Sky Teleport Gate.")
+        if self.gate_unlocked:
+            ag.thought = "The Sky Teleport Gate is alive! We can travel to the Sky Market!"
+        return b
+
+    def gate_snapshot(self) -> dict:
+        remaining: dict[str, int] = {}
+        for b in self.gate_blueprint:
+            if not self.gate_block_matches(b):
+                remaining[b.material] = remaining.get(b.material, 0) + b.amount
+        nxt = self.next_gate_block()
+        return {
+            "discovered": self.gate_discovered,
+            "unlocked": self.gate_unlocked,
+            "progress": round(self.gate_progress(), 1),
+            "clues": dict(self.gate_clues),
+            "built_count": sum(self.gate_block_matches(b) for b in self.gate_blueprint),
+            "total_count": len(self.gate_blueprint),
+            "missing_items": remaining,
+            "next_material": nxt.material if nxt else None,
+            "next_surface": nxt.surface_material if nxt else None,
+            "position": xyz((10, 11, 15)),
+        }
+
     def tree_bases(self):
         return [p for p in self.world.positions(LOG) if self.world.get(p[0], p[1] - 1, p[2]) != LOG]
 
@@ -947,7 +1088,7 @@ class Simulation:
         return dict(
             tick=self.tick, day=self.day, time_of_day=self.time_of_day, clock_str=self.clock_str,
             phase=self.phase, weather=self.weather, paused=self.paused, speed=self.speed, seed=self.seed,
-            world_id=self.biome, coins=self.coins,
+            world_id=self.biome, coins=self.coins, gate=self.gate_snapshot(),
             npc=focus.snapshot(),
             agents=[a.snapshot() for a in self.agents.values()],
             stats=dict(
@@ -1256,6 +1397,7 @@ class Simulation:
             "save_version": 1,
             "biome": self.biome,
             "coins": int(self.coins),
+            "gate_clues": dict(self.gate_clues),
             "seed": int(self.seed),
             "tick": int(self.tick),
             "elapsed": round(float(self.elapsed), 4),
@@ -1308,6 +1450,13 @@ class Simulation:
         sim.weather = raw_weather if raw_weather in {"clear", "rain", "storm"} else "clear"
         sim.weather_override = bool(data.get("weather_override", False))
         sim.blueprint = [] if sim.biome == "market" else house_blueprint()
+        sim.gate_blueprint = [] if sim.biome == "market" else gate_blueprint()
+        raw_clues = data.get("gate_clues") if isinstance(data.get("gate_clues"), dict) else {}
+        sim.gate_clues = (
+            {"anchor": True, "conduit": True, "core": True}
+            if sim.biome == "market"
+            else {k: bool(raw_clues.get(k, False)) for k in ("anchor", "conduit", "core")}
+        )
         sim.farm_sites = [] if sim.biome == "market" else [(x, 10, z) for x in (19, 20) for z in range(18, 22)]
         sim.crop_age = _decode_pos_map(data.get("crop_age", []))
         sim.wet_age = _decode_pos_map(data.get("wet_age", []))

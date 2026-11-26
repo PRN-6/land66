@@ -264,3 +264,31 @@ def test_market_world_generation_and_save_roundtrip():
     restored = Simulation.from_save(exported)
     assert restored.biome == 'market' and restored.coins == 320
     assert restored.world.biome == 'market'
+
+
+def test_teleport_gate_riddles_study_and_assembly():
+    s = Simulation(seed=66)
+    assert not s.gate_discovered and not s.gate_unlocked
+    assert s.gate_progress() == 0.0
+
+    ok_wrong, hint = s.decipher_gate_rune('anchor', 'granite')
+    assert not ok_wrong and 'volcanic' in hint.lower()
+
+    assert s.decipher_gate_rune('anchor', 'obsidian')[0]
+    assert s.decipher_gate_rune('conduit', 'crystal')[0]
+    assert s.decipher_gate_rune('core', 'sunstone')[0]
+    assert s.gate_discovered and not s.gate_unlocked
+
+    # Give required gate materials and assemble all 7 blocks
+    s.inventory['obsidian'] = 2
+    s.inventory['marble'] = 2
+    s.inventory['crystal'] = 2
+    s.inventory['sunstone'] = 1
+    for _ in range(7):
+        s.assemble_gate_block()
+    assert s.gate_progress() == 100.0
+    assert s.gate_unlocked
+
+    exported = s.export_save()
+    restored = Simulation.from_save(exported)
+    assert restored.gate_discovered and restored.gate_unlocked

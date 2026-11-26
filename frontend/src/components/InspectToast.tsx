@@ -14,9 +14,10 @@ interface InspectToastProps {
   agents: NpcState[];
   onClose: () => void;
   onOpenShop?: () => void;
+  onOpenGate?: () => void;
 }
 
-export function InspectToast({ target, state, agents, onClose, onOpenShop }: InspectToastProps) {
+export function InspectToast({ target, state, agents, onClose, onOpenShop, onOpenGate }: InspectToastProps) {
   if (!target) return null;
 
   const targetNpc =
@@ -131,6 +132,29 @@ export function InspectToast({ target, state, agents, onClose, onOpenShop }: Ins
             className="mt-2.5 w-full rounded-xl bg-white px-3 py-1.5 text-[11px] font-medium text-neutral-950 transition hover:bg-neutral-200 cursor-pointer"
           >
             Open Market Shop
+          </button>
+        )}
+
+      {onOpenGate &&
+        target.kind === 'block' &&
+        ((state.world_id !== 'market' &&
+          target.x === 10 &&
+          target.z >= 14 &&
+          target.z <= 16 &&
+          target.y >= 10 &&
+          target.y <= 13) ||
+          (state.world_id === 'market' &&
+            target.z === 25 &&
+            target.x >= 15 &&
+            target.x <= 17 &&
+            target.y >= 10 &&
+            target.y <= 13)) && (
+          <button
+            type="button"
+            onClick={onOpenGate}
+            className="mt-2.5 w-full rounded-xl bg-white px-3 py-1.5 text-[11px] font-medium text-neutral-950 transition hover:bg-neutral-200 cursor-pointer"
+          >
+            {state.gate?.unlocked ? 'Open Sky Teleport Gate' : 'Decipher & Build Teleport Gate'}
           </button>
         )}
     </div>

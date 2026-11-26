@@ -9,6 +9,7 @@ import type {
   NpcState,
   SaveSlotSummary,
   SimSpeed,
+  TeleportGateState,
   WorldSavePayload,
   WorldStateSnapshot,
 } from '../types/world';
@@ -250,6 +251,33 @@ export const backendApi = {
     return requestJson('/api/market/sell', {
       method: 'POST',
       body: JSON.stringify({ item, quantity, ...(agentId ? { agent_id: agentId } : {}) }),
+    });
+  },
+
+  gateDecipher(
+    rune: 'anchor' | 'conduit' | 'core',
+    answer: string,
+  ): Promise<{ ok: boolean; correct: boolean; feedback: string; gate: TeleportGateState; state: WorldStateSnapshot }> {
+    return requestJson('/api/gate/decipher', {
+      method: 'POST',
+      body: JSON.stringify({ rune, answer }),
+    });
+  },
+
+  gateStudy(agentId?: string): Promise<{ ok: boolean; message: string; gate: TeleportGateState; state: WorldStateSnapshot }> {
+    return requestJson('/api/gate/study', {
+      method: 'POST',
+      body: JSON.stringify(agentId ? { agent_id: agentId } : {}),
+    });
+  },
+
+  gateBuild(
+    mode: 'place' | 'npc' = 'place',
+    agentId?: string,
+  ): Promise<{ ok: boolean; message: string; gate: TeleportGateState; state: WorldStateSnapshot }> {
+    return requestJson('/api/gate/build', {
+      method: 'POST',
+      body: JSON.stringify({ mode, ...(agentId ? { agent_id: agentId } : {}) }),
     });
   },
 };

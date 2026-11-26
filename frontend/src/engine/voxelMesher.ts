@@ -26,6 +26,7 @@ export interface BuiltDioramaWorld {
   cropMeshes: THREE.Object3D[];
   treeCanopies: THREE.Object3D[];
   pondFish: AnimatedPondFish[];
+  portalMeshes: THREE.Object3D[];
   foliagePositions: Vec3[];
   mistOrigins: Vec3[];
   waterMesh: THREE.Mesh | null;
@@ -168,6 +169,7 @@ export function buildWorldMeshes(
   const cropMeshes: THREE.Object3D[] = [];
   const treeCanopies: THREE.Object3D[] = [];
   const pondFish: AnimatedPondFish[] = [];
+  const portalMeshes: THREE.Object3D[] = [];
   const foliagePositions: Vec3[] = [];
   const mistOrigins: Vec3[] = [];
 
@@ -497,6 +499,42 @@ export function buildWorldMeshes(
         group.add(grp);
       } else {
         addPart(group, roundedStoneGeo, glowMat, se.x + 0.5, se.y + 0.5, se.z + 0.5, 1, 1, 1, coord, false);
+        // If Sunstone sits as the keystone arch top over an open 1x2 doorway flanked by stone pillars, render active Sky Portal Veil
+        if (
+          matDef.id === 'sunstone' &&
+          getB(se.x, se.y - 1, se.z) === BlockId.AIR &&
+          getB(se.x, se.y - 2, se.z) === BlockId.AIR
+        ) {
+          const zArch =
+            getB(se.x, se.y - 1, se.z - 1) === BlockId.STONE &&
+            getB(se.x, se.y - 1, se.z + 1) === BlockId.STONE;
+          const xArch =
+            getB(se.x - 1, se.y - 1, se.z) === BlockId.STONE &&
+            getB(se.x + 1, se.y - 1, se.z) === BlockId.STONE;
+          if (zArch || xArch) {
+            const pMat = getClayMat('sky_portal_curtain', 0x7be8ff, {
+              emissive: new THREE.Color(0x38bdf8),
+              emissiveIntensity: 1.45,
+              transparent: true,
+              opacity: 0.66,
+              roughness: 0.15,
+            });
+            const ringMat = getClayMat('sky_portal_ring', 0xfef08a, {
+              emissive: new THREE.Color(0xfbbf24),
+              emissiveIntensity: 1.5,
+              roughness: 0.2,
+            });
+            const pGrp = new THREE.Group();
+            pGrp.position.set(se.x + 0.5, se.y - 1.0, se.z + 0.5);
+            if (xArch && !zArch) pGrp.rotation.y = Math.PI * 0.5;
+            const veil = addPart(pGrp, roundedPlankGeo, pMat, 0, 0, 0, 0.16, 1.92, 0.94, coord, false);
+            veil.userData = { blockCoord: coord, isPortalGate: true };
+            const ring = addPart(pGrp, smoothSphereGeo, ringMat, 0, 0, 0, 0.24, 0.52, 0.52, coord, false);
+            ring.userData = { blockCoord: coord, isPortalGate: true };
+            portalMeshes.push(ring);
+            group.add(pGrp);
+          }
+        }
       }
     }
   }
@@ -1142,6 +1180,7 @@ export function buildWorldMeshes(
     cropMeshes,
     treeCanopies,
     pondFish,
+    portalMeshes,
     foliagePositions,
     mistOrigins,
     waterMesh,

@@ -218,6 +218,23 @@ export interface LlmStatus {
 
 export type FloatingWorldId = 'homestead' | 'market';
 
+export interface TeleportGateState {
+  discovered: boolean;
+  unlocked: boolean;
+  progress: number;
+  clues: {
+    anchor: boolean;
+    conduit: boolean;
+    core: boolean;
+  };
+  built_count: number;
+  total_count: number;
+  missing_items: Record<string, number>;
+  next_material: string | null;
+  next_surface: string | null;
+  position: Vec3;
+}
+
 export interface WorldStateSnapshot {
   tick: number;
   day: number;
@@ -230,6 +247,7 @@ export interface WorldStateSnapshot {
   seed: number;
   world_id?: FloatingWorldId | string;
   coins?: number;
+  gate?: TeleportGateState;
   npc: NpcState;
   agents?: NpcState[];
   stats: WorldStats;

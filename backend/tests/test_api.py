@@ -221,9 +221,28 @@ def test_switch_to_market_world_and_buy_sell():
             init_home = ws.receive_json()
             assert init_home['state']['world_id'] == 'homestead'
             assert init_home['state']['coins'] == 250
+            assert init_home['state']['gate']['unlocked'] is False
 
-            # Give Aiden berries to sell later
-            client.post('/api/god/intervene', json={'action': 'drop_gift', 'value': {'berries': 5}})
+            # Cannot travel to Sky Market until the Teleport Gate is deciphered and built
+            locked_res = client.post('/api/world/switch', json={'world': 'market'})
+            assert locked_res.status_code == 403
+
+            # Solve the 3 gate blueprint clues
+            assert not client.post('/api/gate/decipher', json={'rune': 'anchor', 'answer': 'granite'}).json()['correct']
+            assert client.post('/api/gate/decipher', json={'rune': 'anchor', 'answer': 'obsidian'}).json()['correct']
+            assert client.post('/api/gate/decipher', json={'rune': 'conduit', 'answer': 'crystal'}).json()['correct']
+            core = client.post('/api/gate/decipher', json={'rune': 'core', 'answer': 'sunstone'}).json()
+            assert core['correct'] and core['gate']['discovered'] is True
+
+            # Provide gate materials + berries and assemble the 7-block gate
+            client.post('/api/god/intervene', json={
+                'action': 'drop_gift',
+                'value': {'obsidian': 2, 'marble': 2, 'crystal': 2, 'sunstone': 1, 'berries': 5},
+            })
+            for _ in range(7):
+                built = client.post('/api/gate/build', json={'mode': 'place'})
+                assert built.status_code == 200
+            assert built.json()['gate']['unlocked'] is True
 
             sw = client.post('/api/world/switch', json={'world': 'market'})
             assert sw.status_code == 200

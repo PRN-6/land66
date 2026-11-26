@@ -5,6 +5,7 @@ import {
   CloudRain,
   Compass,
   Eye,
+  Lock,
   MessageSquare,
   PanelRight,
   Pause,
@@ -13,6 +14,7 @@ import {
   Route,
   Save,
   SkipForward,
+  Sparkles,
   Store,
   Sun,
   Video,
@@ -32,6 +34,7 @@ interface TopBarProps {
   onToggleThoughtBubble: () => void;
   onTogglePath: () => void;
   onToggleInspector: () => void;
+  onOpenGateModal: () => void;
   onOpenShopModal: () => void;
   onOpenSavesModal: () => void;
   onOpenLlmModal: () => void;
@@ -51,6 +54,7 @@ export function TopBar({
   onToggleThoughtBubble,
   onTogglePath,
   onToggleInspector,
+  onOpenGateModal,
   onOpenShopModal,
   onOpenSavesModal,
   onOpenLlmModal,
@@ -114,20 +118,34 @@ export function TopBar({
           ] as const
         ).map((w) => {
           const active = (state.world_id ?? 'homestead') === w.id;
+          const locked = w.id === 'market' && !(state.gate?.unlocked ?? false);
           return (
             <button
               key={w.id}
-              onClick={() => onSwitchWorld(w.id)}
-              className={`px-2 py-0.5 rounded-full text-[11px] transition cursor-pointer ${
+              onClick={() => (locked ? onOpenGateModal() : onSwitchWorld(w.id))}
+              title={locked ? 'Build Sky Teleport Gate to unlock Market' : undefined}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] transition cursor-pointer ${
                 active
                   ? 'bg-white text-neutral-950 font-medium'
                   : 'text-neutral-400 hover:text-white hover:bg-white/10'
               }`}
             >
-              {w.label}
+              {locked && <Lock className="w-2.5 h-2.5" />}
+              <span>{w.label}</span>
             </button>
           );
         })}
+
+        <button
+          onClick={onOpenGateModal}
+          title="Sky Teleport Gate Blueprint"
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] text-neutral-300 hover:text-white hover:bg-white/10 transition cursor-pointer"
+        >
+          <Sparkles className="w-3 h-3" />
+          <span className="hidden md:inline">
+            {state.gate?.unlocked ? 'Gate' : `Gate ${state.gate?.built_count ?? 0}/${state.gate?.total_count ?? 7}`}
+          </span>
+        </button>
       </div>
 
       {/* Simulation Controls */}

@@ -56,6 +56,7 @@ export class VoxelWorldScene {
   private cropMeshes: THREE.Object3D[] = [];
   private treeCanopies: THREE.Object3D[] = [];
   private pondFish: AnimatedPondFish[] = [];
+  private portalMeshes: THREE.Object3D[] = [];
 
   private agentsGroup = new THREE.Group();
   private agentModels = new Map<string, NpcModel>();
@@ -445,6 +446,7 @@ export class VoxelWorldScene {
     this.cropMeshes = built.cropMeshes;
     this.treeCanopies = built.treeCanopies;
     this.pondFish = built.pondFish;
+    this.portalMeshes = built.portalMeshes;
 
     this.worldGroup.add(this.dioramaRoot);
     this.atmosphere.setWorldAnchors(built.torchPositions, built.foliagePositions, built.mistOrigins);
@@ -528,6 +530,12 @@ export class VoxelWorldScene {
     for (let i = 0; i < this.treeCanopies.length; i++) {
       this.treeCanopies[i].rotation.z = Math.sin(this.elapsed * 1.1 + i * 1.3) * 0.02;
       this.treeCanopies[i].rotation.x = Math.cos(this.elapsed * 0.9 + i * 0.9) * 0.015;
+    }
+    for (let i = 0; i < this.portalMeshes.length; i++) {
+      const pm = this.portalMeshes[i];
+      pm.rotation.x = this.elapsed * 1.6;
+      const pulse = 0.85 + Math.sin(this.elapsed * 3.2) * 0.14;
+      pm.scale.set(0.24, 0.52 * pulse, 0.52 * pulse);
     }
 
     for (const f of this.pondFish) {
