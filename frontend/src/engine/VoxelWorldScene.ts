@@ -48,6 +48,7 @@ export class VoxelWorldScene {
 
   private blocks = new Uint8Array(WORLD_VOLUME);
   private blockMeta = new Uint8Array(WORLD_VOLUME);
+  private blockMaterials: string[] = new Array(WORLD_VOLUME).fill('');
 
   private mats: StylizedMaterials;
   private worldGroup = new THREE.Group();
@@ -294,6 +295,7 @@ export class VoxelWorldScene {
         z: res.hitCoord.z,
         block: this.blocks[idx],
         meta: this.blockMeta[idx],
+        material: this.blockMaterials[idx] || undefined,
       });
     }
   };
@@ -332,10 +334,12 @@ export class VoxelWorldScene {
   public applyWorldInit(msg: WorldInitMessage): void {
     this.blocks.fill(0);
     this.blockMeta.fill(0);
+    this.blockMaterials.fill('');
     const len = Math.min(WORLD_VOLUME, msg.blocks.length);
     for (let i = 0; i < len; i++) {
       this.blocks[i] = msg.blocks[i] ?? 0;
       this.blockMeta[i] = msg.block_meta?.[i] ?? 0;
+      this.blockMaterials[i] = msg.block_materials?.[i] ?? '';
     }
     this.needsRebuild = true;
     this.applyState(msg.state, true);
@@ -351,14 +355,18 @@ export class VoxelWorldScene {
       const oldBlock = this.blocks[idx];
       const newBlock = u.block;
       const newMeta = u.meta ?? 0;
-      if (oldBlock !== newBlock || this.blockMeta[idx] !== newMeta) {
+      const hasMat = Object.prototype.hasOwnProperty.call(u, 'material');
+      const nextMat = hasMat ? (u.material ?? '') : oldBlock !== newBlock ? '' : this.blockMaterials[idx];
+      if (oldBlock !== newBlock || this.blockMeta[idx] !== newMeta || this.blockMaterials[idx] !== nextMat) {
         this.blocks[idx] = newBlock;
         this.blockMeta[idx] = newMeta;
+        this.blockMaterials[idx] = nextMat;
         changed = true;
 
         const burstBlock = newBlock === BlockId.AIR ? oldBlock : newBlock;
+        const burstMat = newBlock === BlockId.AIR ? '' : nextMat;
         if (burstBlock !== BlockId.AIR) {
-          this.effects.spawnBlockBurst(u.x, u.y, u.z, getBlockParticleColor(burstBlock), 6);
+          this.effects.spawnBlockBurst(u.x, u.y, u.z, getBlockParticleColor(burstBlock, burstMat), 6);
         }
       }
     }
@@ -432,7 +440,7 @@ export class VoxelWorldScene {
       this.worldGroup.remove(this.dioramaRoot);
     }
 
-    const built = buildWorldMeshes(this.blocks, this.blockMeta, this.mats.waterNormalMap);
+    const built = buildWorldMeshes(this.blocks, this.blockMeta, this.mats.waterNormalMap, this.blockMaterials);
     this.dioramaRoot = built.group;
     this.cropMeshes = built.cropMeshes;
     this.treeCanopies = built.treeCanopies;

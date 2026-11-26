@@ -11,6 +11,9 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import {
+  PLACEABLE_MATERIALS,
+} from '../engine/materialCatalog';
 import type {
   AgentRole,
   EntityKind,
@@ -46,27 +49,34 @@ interface GodDockProps {
   ) => void;
 }
 
-const WORLD_OBJECTS: Array<{ object: string; label: string; group: string }> = [
-  { object: 'tree', label: 'Tree', group: 'Nature' },
-  { object: 'sapling', label: 'Sapling', group: 'Nature' },
-  { object: 'wild_berry', label: 'Berry Bush', group: 'Nature' },
-  { object: 'stone', label: 'Boulder', group: 'Nature' },
-  { object: 'water', label: 'Water', group: 'Nature' },
-  { object: 'grass', label: 'Grass', group: 'Nature' },
-  { object: 'dirt', label: 'Dirt', group: 'Nature' },
-  { object: 'farmland', label: 'Farmland', group: 'Farm' },
-  { object: 'crop_wheat', label: 'Ripe Wheat', group: 'Farm' },
-  { object: 'fence', label: 'Fence', group: 'Build' },
-  { object: 'wood_log', label: 'Log', group: 'Build' },
-  { object: 'wood_plank', label: 'Wood Wall', group: 'Build' },
-  { object: 'cobblestone', label: 'Cobble', group: 'Build' },
-  { object: 'roof_shingle', label: 'Roof Tile', group: 'Build' },
-  { object: 'glass', label: 'Window', group: 'Build' },
-  { object: 'door_closed', label: 'Door', group: 'Build' },
-  { object: 'torch', label: 'Lantern', group: 'Prop' },
-  { object: 'bed', label: 'Bed', group: 'Prop' },
-  { object: 'chest', label: 'Chest', group: 'Prop' },
-  { object: 'crafting_bench', label: 'Workbench', group: 'Prop' },
+const WORLD_OBJECTS: Array<{ object: string; label: string; group: string; swatch?: string; material?: string }> = [
+  { object: 'tree', label: 'Tree', group: 'Nature', swatch: '#76aa64' },
+  { object: 'sapling', label: 'Sapling', group: 'Nature', swatch: '#8bc072' },
+  { object: 'wild_berry', label: 'Berry Bush', group: 'Nature', swatch: '#e11d48' },
+  { object: 'stone', label: 'Boulder', group: 'Nature', swatch: '#9099a1' },
+  { object: 'water', label: 'Water', group: 'Nature', swatch: '#5cc4d8' },
+  { object: 'grass', label: 'Grass', group: 'Nature', swatch: '#90be65' },
+  { object: 'dirt', label: 'Dirt', group: 'Nature', swatch: '#8e6c53' },
+  { object: 'farmland', label: 'Farmland', group: 'Nature', swatch: '#7d5b3e' },
+  { object: 'crop_wheat', label: 'Ripe Wheat', group: 'Nature', swatch: '#f2c249' },
+  { object: 'fence', label: 'Fence', group: 'Build', swatch: '#c89d6c' },
+  { object: 'wood_log', label: 'Log', group: 'Build', swatch: '#704d37' },
+  { object: 'wood_plank', label: 'Wood Wall', group: 'Build', swatch: '#d1a574' },
+  { object: 'cobblestone', label: 'Cobble', group: 'Build', swatch: '#a4abb2' },
+  { object: 'roof_shingle', label: 'Roof Tile', group: 'Build', swatch: '#4b6a75' },
+  { object: 'glass', label: 'Window', group: 'Build', swatch: '#c6eef9' },
+  { object: 'door_closed', label: 'Door', group: 'Build', swatch: '#b68150' },
+  { object: 'torch', label: 'Lantern', group: 'Prop', swatch: '#ffdf9a' },
+  { object: 'bed', label: 'Bed', group: 'Prop', swatch: '#d65b59' },
+  { object: 'chest', label: 'Chest', group: 'Prop', swatch: '#b37b48' },
+  { object: 'crafting_bench', label: 'Workbench', group: 'Prop', swatch: '#cf9b63' },
+  ...PLACEABLE_MATERIALS.map((m) => ({
+    object: m.id,
+    label: m.label,
+    group: 'Materials',
+    swatch: m.colorCss,
+    material: m.id,
+  })),
 ];
 
 const AI_ROLES: Array<{ role: AgentRole; label: string }> = [
@@ -103,6 +113,7 @@ export function GodDock({
   const [npcName, setNpcName] = useState('');
   const [npcRole, setNpcRole] = useState<AgentRole>('builder');
   const [customAnimalName, setCustomAnimalName] = useState('');
+  const [objectCategory, setObjectCategory] = useState<'All' | 'Materials' | 'Nature' | 'Build' | 'Prop'>('All');
   const [whisperText, setWhisperText] = useState('');
   const [whisperTarget, setWhisperTarget] = useState<'selected' | 'all'>('selected');
   const [giftItem, setGiftItem] = useState('berries');
@@ -137,7 +148,12 @@ export function GodDock({
           </span>
           {activeTool.mode === 'object' && (
             <button
-              onClick={() => onGodIntervene('spawn_object', { object: activeTool.object })}
+              onClick={() =>
+                onGodIntervene('spawn_object', {
+                  object: activeTool.object,
+                  ...(activeTool.material ? { material: activeTool.material } : {}),
+                })
+              }
               className="px-2 py-0.5 rounded-full bg-white text-neutral-950 font-medium text-[10px] hover:bg-neutral-200 cursor-pointer"
             >
               Drop Near {selectedNpc.name}
@@ -177,25 +193,37 @@ export function GodDock({
         </div>
       )}
 
-      {/* Objects Tray */}
+      {/* Objects & Materials Tray */}
       {tray === 'objects' && (
-        <div className="w-[34rem] max-w-[calc(100vw-1.5rem)] p-3 rounded-2xl bg-neutral-950/88 backdrop-blur-2xl border border-white/10 shadow-2xl">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-medium text-neutral-300">
-              World Objects — select & click island to place
-            </span>
+        <div className="w-[36rem] max-w-[calc(100vw-1.5rem)] p-3 rounded-2xl bg-neutral-950/90 backdrop-blur-2xl border border-white/10 shadow-2xl">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-1">
+              {(['All', 'Materials', 'Nature', 'Build', 'Prop'] as const).map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setObjectCategory(cat)}
+                  className={`px-2 py-0.5 rounded-full text-[10px] transition cursor-pointer ${
+                    objectCategory === cat
+                      ? 'bg-white text-neutral-950 font-medium'
+                      : 'text-neutral-400 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
             <button onClick={() => onSetTray(null)} className="text-neutral-500 hover:text-white cursor-pointer">
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
-          <div className="grid grid-cols-4 sm:grid-cols-5 gap-1.5">
-            {WORLD_OBJECTS.map((obj) => {
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5 max-h-60 overflow-y-auto hud-scroll pr-0.5">
+            {WORLD_OBJECTS.filter((obj) => objectCategory === 'All' || obj.group === objectCategory).map((obj) => {
               const selected = activeTool.mode === 'object' && activeTool.object === obj.object;
               return (
                 <button
                   key={obj.object}
                   onClick={() => {
-                    onSelectTool({ mode: 'object', object: obj.object, label: obj.label });
+                    onSelectTool({ mode: 'object', object: obj.object, label: obj.label, material: obj.material });
                     onSetTray(null);
                   }}
                   className={`px-2 py-1.5 rounded-xl border text-left transition cursor-pointer ${
@@ -204,8 +232,16 @@ export function GodDock({
                       : 'bg-neutral-900/80 border-white/5 text-neutral-200 hover:border-white/25 hover:bg-neutral-800/80'
                   }`}
                 >
-                  <div className="text-[11px] truncate">{obj.label}</div>
-                  <div className={`text-[9px] ${selected ? 'text-neutral-600' : 'text-neutral-500'}`}>
+                  <div className="flex items-center gap-1.5">
+                    {obj.swatch && (
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0 border border-white/20"
+                        style={{ backgroundColor: obj.swatch }}
+                      />
+                    )}
+                    <span className="text-[11px] truncate">{obj.label}</span>
+                  </div>
+                  <div className={`text-[9px] mt-0.5 ${selected ? 'text-neutral-600' : 'text-neutral-500'}`}>
                     {obj.group}
                   </div>
                 </button>

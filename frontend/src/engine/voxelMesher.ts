@@ -8,6 +8,7 @@ import {
   blockIndex,
   type Vec3,
 } from '../types/world';
+import { getWorldMaterial } from './materialCatalog';
 
 export interface AnimatedPondFish {
   mesh: THREE.Group;
@@ -36,7 +37,9 @@ function coordHash(x: number, y: number, z: number): number {
   return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
 }
 
-export function getBlockParticleColor(block: number): number {
+export function getBlockParticleColor(block: number, material?: string | null): number {
+  const matDef = getWorldMaterial(material);
+  if (matDef) return matDef.hex;
   switch (block) {
     case BlockId.GRASS:
       return 0x93be68;
@@ -156,6 +159,7 @@ export function buildWorldMeshes(
   blocks: Uint8Array,
   blockMeta: Uint8Array,
   waterNormalMap: THREE.Texture,
+  blockMaterials?: string[],
 ): BuiltDioramaWorld {
   const group = new THREE.Group();
   group.name = 'diorama_world';
@@ -174,6 +178,13 @@ export function buildWorldMeshes(
     return blocks[blockIndex(x, y, z)];
   };
 
+  const getM = (x: number, y: number, z: number): string => {
+    if (!blockMaterials || x < 0 || x >= WORLD_WIDTH || y < 0 || y >= WORLD_HEIGHT || z < 0 || z >= WORLD_DEPTH) {
+      return '';
+    }
+    return blockMaterials[blockIndex(x, y, z)] ?? '';
+  };
+
   const isFullySurrounded = (x: number, y: number, z: number): boolean =>
     isSolidTerrainOrBuild(getB(x + 1, y, z)) &&
     isSolidTerrainOrBuild(getB(x - 1, y, z)) &&
@@ -185,7 +196,14 @@ export function buildWorldMeshes(
   // Track which LEAVES belong to sculpted organic trees so we don't draw double cube leaves
   const claimedLeafIndices = new Set<number>();
   const claimedLogIndices = new Set<number>();
-  const treeDefs: Array<{ baseX: number; baseY: number; baseZ: number; height: number; isBlossom: boolean }> = [];
+  const treeDefs: Array<{
+    baseX: number;
+    baseY: number;
+    baseZ: number;
+    height: number;
+    barkMatId: string;
+    leafMatId: string;
+  }> = [];
 
   for (let z = 0; z < WORLD_DEPTH; z++) {
     for (let x = 0; x < WORLD_WIDTH; x++) {
@@ -205,6 +223,7 @@ export function buildWorldMeshes(
 
         // Check if leaves exist near top of this log column (i.e. it's a tree!)
         let leafCount = 0;
+        let detectedLeafMat = '';
         for (let ly = y + Math.max(1, h - 1); ly <= Math.min(WORLD_HEIGHT - 1, y + h + 3); ly++) {
           for (let lz = Math.max(0, z - 2); lz <= Math.min(WORLD_DEPTH - 1, z + 2); lz++) {
             for (let lx = Math.max(0, x - 2); lx <= Math.min(WORLD_WIDTH - 1, x + 2); lx++) {
@@ -212,14 +231,19 @@ export function buildWorldMeshes(
               if (blocks[lIdx] === BlockId.LEAVES) {
                 leafCount++;
                 claimedLeafIndices.add(lIdx);
+                if (!detectedLeafMat && blockMaterials?.[lIdx]) {
+                  detectedLeafMat = blockMaterials[lIdx];
+                }
               }
             }
           }
         }
 
         if (leafCount > 0) {
-          const isBlossom = coordHash(x, y, z) > 0.72;
-          treeDefs.push({ baseX: x, baseY: y, baseZ: z, height: h, isBlossom });
+          const isBlossomHash = coordHash(x, y, z) > 0.78;
+          const barkMatId = getM(x, y, z) || 'oak_bark';
+          const leafMatId = detectedLeafMat || (isBlossomHash ? 'sakura_foliage' : 'oak_foliage');
+          treeDefs.push({ baseX: x, baseY: y, baseZ: z, height: h, barkMatId, leafMatId });
         } else {
           // Unclaim single placed log if no leaves around
           for (let py = y; py < y + h; py++) {
@@ -231,10 +255,11 @@ export function buildWorldMeshes(
   }
 
   // Collect instanced terrain/building blocks for crisp rounded diorama rendering
-  const grassEntries: Array<{ x: number; y: number; z: number }> = [];
-  const dirtEntries: Array<{ x: number; y: number; z: number }> = [];
-  const stoneEntries: Array<{ x: number; y: number; z: number; isCobble: boolean }> = [];
-  const plankEntries: Array<{ x: number; y: number; z: number }> = [];
+  const grassEntries: Array<{ x: number; y: number; z: number; material: string }> = [];
+  const dirtEntries: Array<{ x: number; y: number; z: number; material: string }> = [];
+  const stoneEntries: Array<{ x: number; y: number; z: number; isCobble: boolean; material: string }> = [];
+  const specialStoneEntries: Array<{ x: number; y: number; z: number; material: string }> = [];
+  const plankEntries: Array<{ x: number; y: number; z: number; material: string }> = [];
   const grassTufts: Array<{ x: number; y: number; z: number; scale: number; rot: number; tint: number }> = [];
   const flowerEntries: Array<{ x: number; y: number; z: number; petalColor: number }> = [];
   const pebbleEntries: Array<{ x: number; y: number; z: number; scale: number }> = [];
@@ -246,6 +271,7 @@ export function buildWorldMeshes(
         const idx = blockIndex(x, y, z);
         const b = blocks[idx];
         if (b === BlockId.AIR) continue;
+        const matId = blockMaterials?.[idx] ?? '';
 
         if (b === BlockId.WATER) {
           waterCells.push({ x, y, z });
@@ -257,7 +283,7 @@ export function buildWorldMeshes(
         }
 
         if (b === BlockId.GRASS) {
-          grassEntries.push({ x, y, z });
+          grassEntries.push({ x, y, z, material: matId });
           if (getB(x, y + 1, z) === BlockId.AIR) {
             const r = coordHash(x, y, z);
             if (r < 0.42) {
@@ -289,17 +315,22 @@ export function buildWorldMeshes(
         }
 
         if (b === BlockId.DIRT) {
-          dirtEntries.push({ x, y, z });
+          dirtEntries.push({ x, y, z, material: matId });
           continue;
         }
 
         if (b === BlockId.STONE || b === BlockId.COBBLESTONE) {
-          stoneEntries.push({ x, y, z, isCobble: b === BlockId.COBBLESTONE });
+          const matDef = getWorldMaterial(matId);
+          if (matDef && matDef.finish !== 'matte') {
+            specialStoneEntries.push({ x, y, z, material: matId });
+          } else {
+            stoneEntries.push({ x, y, z, isCobble: b === BlockId.COBBLESTONE, material: matId });
+          }
           continue;
         }
 
         if (b === BlockId.WOOD_PLANK) {
-          plankEntries.push({ x, y, z });
+          plankEntries.push({ x, y, z, material: matId });
           continue;
         }
       }
@@ -324,11 +355,13 @@ export function buildWorldMeshes(
     for (let i = 0; i < grassEntries.length; i++) {
       const e = grassEntries[i];
       const h = coordHash(e.x, e.y, e.z);
+      const matDef = getWorldMaterial(e.material);
       dummy.position.set(e.x + 0.5, e.y + 0.79, e.z + 0.5);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
-      tmpColor.setHex(palette[Math.floor(h * palette.length) % palette.length]);
+      tmpColor.setHex(matDef ? matDef.hex : palette[Math.floor(h * palette.length) % palette.length]);
+      if (matDef) tmpColor.offsetHSL(0, 0, (h - 0.5) * 0.04);
       addInstanceCoord(turfInst, i, dummy.matrix, tmpColor);
 
       dummy.position.set(e.x + 0.5, e.y + 0.36, e.z + 0.5);
@@ -342,7 +375,7 @@ export function buildWorldMeshes(
     group.add(turfInst, subInst);
   }
 
-  // 2. Dirt blocks
+  // 2. Dirt blocks (supports clay_bank, sandy_bank, rich loam)
   if (dirtEntries.length > 0) {
     const dirtMat = getClayMat('diorama_dirt', 0xffffff, { roughness: 0.9 });
     const inst = new THREE.InstancedMesh(roundedBlockGeo, dirtMat, dirtEntries.length);
@@ -351,11 +384,13 @@ export function buildWorldMeshes(
     for (let i = 0; i < dirtEntries.length; i++) {
       const e = dirtEntries[i];
       const h = coordHash(e.x, e.y, e.z);
+      const matDef = getWorldMaterial(e.material);
       dummy.position.set(e.x + 0.5, e.y + 0.5, e.z + 0.5);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
-      tmpColor.setHex(h < 0.5 ? 0x8e6c53 : 0x826149);
+      tmpColor.setHex(matDef ? matDef.hex : h < 0.5 ? 0x8e6c53 : 0x826149);
+      if (matDef) tmpColor.offsetHSL(0, 0, (h - 0.5) * 0.04);
       addInstanceCoord(inst, i, dummy.matrix, tmpColor);
     }
     inst.instanceMatrix.needsUpdate = true;
@@ -363,7 +398,7 @@ export function buildWorldMeshes(
     group.add(inst);
   }
 
-  // 3. Stone & Cobblestone (Smooth beveled stone plinth masonry!)
+  // 3. Stone, Strata & Masonry (Granite, Slate, Mossy Stone, Sandstone, Brick, Coal...)
   if (stoneEntries.length > 0) {
     const stoneMat = getClayMat('diorama_stone', 0xffffff, { roughness: 0.78 });
     const inst = new THREE.InstancedMesh(roundedStoneGeo, stoneMat, stoneEntries.length);
@@ -373,12 +408,18 @@ export function buildWorldMeshes(
     for (let i = 0; i < stoneEntries.length; i++) {
       const e = stoneEntries[i];
       const h = coordHash(e.x, e.y, e.z);
+      const matDef = getWorldMaterial(e.material);
       dummy.position.set(e.x + 0.5, e.y + 0.5, e.z + 0.5);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
-      tmpColor.setHex(stonePalette[Math.floor(h * stonePalette.length) % stonePalette.length]);
-      if (e.isCobble) tmpColor.offsetHSL(0.02, -0.02, 0.04);
+      if (matDef) {
+        tmpColor.setHex(matDef.hex);
+        tmpColor.offsetHSL(0, 0, (h - 0.5) * 0.04);
+      } else {
+        tmpColor.setHex(stonePalette[Math.floor(h * stonePalette.length) % stonePalette.length]);
+        if (e.isCobble) tmpColor.offsetHSL(0.02, -0.02, 0.04);
+      }
       addInstanceCoord(inst, i, dummy.matrix, tmpColor);
     }
     inst.instanceMatrix.needsUpdate = true;
@@ -386,7 +427,81 @@ export function buildWorldMeshes(
     group.add(inst);
   }
 
-  // 4. Wood Planks (Smooth warm cabin timber)
+  // 3B. Special PBR Finishes: Metallic Ore Veins, Glossy Marble/Obsidian, Luminous Crystal/Sunstone
+  for (const se of specialStoneEntries) {
+    const matDef = getWorldMaterial(se.material);
+    if (!matDef) continue;
+    const coord = { x: se.x, y: se.y, z: se.z };
+
+    if (matDef.finish === 'metallic') {
+      if (matDef.id === 'copper_block') {
+        const cMat = getClayMat(`sp_${matDef.id}`, matDef.hex, {
+          roughness: matDef.roughness,
+          metalness: matDef.metalness,
+        });
+        addPart(group, roundedStoneGeo, cMat, se.x + 0.5, se.y + 0.5, se.z + 0.5, 1, 1, 1, coord);
+      } else {
+        const hostMat = getClayMat('ore_host_stone', 0x737a82, { roughness: 0.84, metalness: 0.05 });
+        const veinHex = matDef.id === 'gold_vein' ? 0xf2c144 : matDef.id === 'copper_vein' ? 0xd97d4f : 0xd09d78;
+        const veinMat = getClayMat(`ore_nugget_${matDef.id}`, veinHex, {
+          roughness: matDef.roughness,
+          metalness: matDef.metalness,
+        });
+        const grp = new THREE.Group();
+        grp.position.set(se.x + 0.5, se.y + 0.5, se.z + 0.5);
+        addPart(grp, roundedStoneGeo, hostMat, 0, 0, 0, 1, 1, 1, coord);
+        for (const [ox, oy, oz, r] of [
+          [0.2, 0.48, 0.16, 0.22],
+          [-0.22, 0.46, -0.18, 0.18],
+          [0.48, 0.12, -0.14, 0.19],
+          [-0.48, -0.1, 0.18, 0.18],
+          [0.14, -0.08, 0.48, 0.19],
+        ]) {
+          addPart(grp, smoothSphereGeo, veinMat, ox, oy, oz, r, r * 0.85, r, coord);
+        }
+        group.add(grp);
+      }
+    } else if (matDef.finish === 'glossy') {
+      const key = `phys_${matDef.id}`;
+      let phys = matCache[key] as THREE.Material | undefined;
+      if (!phys) {
+        phys = new THREE.MeshPhysicalMaterial({
+          color: matDef.hex,
+          roughness: matDef.roughness,
+          metalness: matDef.metalness,
+          clearcoat: 0.78,
+          clearcoatRoughness: 0.14,
+        });
+        matCache[key] = phys as THREE.MeshStandardMaterial;
+      }
+      addPart(group, roundedStoneGeo, phys, se.x + 0.5, se.y + 0.5, se.z + 0.5, 1, 1, 1, coord);
+    } else if (matDef.finish === 'emissive') {
+      const glowMat = getClayMat(`sp_${matDef.id}`, matDef.hex, {
+        roughness: matDef.roughness,
+        metalness: matDef.metalness,
+        emissive: new THREE.Color(matDef.emissiveHex ?? matDef.hex),
+        emissiveIntensity: matDef.emissiveIntensity ?? 1.35,
+      });
+      if (matDef.id === 'crystal_vein') {
+        const hostMat = getClayMat('crystal_host', 0x56606b, { roughness: 0.76, metalness: 0.08 });
+        const grp = new THREE.Group();
+        grp.position.set(se.x + 0.5, se.y + 0.5, se.z + 0.5);
+        addPart(grp, roundedStoneGeo, hostMat, 0, 0, 0, 1, 1, 1, coord);
+        const s1 = addPart(grp, smoothConeGeo, glowMat, 0.06, 0.68, -0.05, 0.34, 0.65, 0.34, coord, false);
+        s1.rotation.z = -0.22;
+        const s2 = addPart(grp, smoothConeGeo, glowMat, -0.2, 0.58, 0.16, 0.24, 0.48, 0.24, coord, false);
+        s2.rotation.z = 0.34;
+        s2.rotation.x = 0.24;
+        const s3 = addPart(grp, smoothConeGeo, glowMat, 0.46, 0.16, 0.18, 0.22, 0.42, 0.22, coord, false);
+        s3.rotation.z = -1.1;
+        group.add(grp);
+      } else {
+        addPart(group, roundedStoneGeo, glowMat, se.x + 0.5, se.y + 0.5, se.z + 0.5, 1, 1, 1, coord, false);
+      }
+    }
+  }
+
+  // 4. Wood Planks (Oak Boards, Walnut Timber, Bamboo Panels)
   if (plankEntries.length > 0) {
     const plankMat = getClayMat('diorama_plank', 0xffffff, { roughness: 0.7 });
     const inst = new THREE.InstancedMesh(roundedPlankGeo, plankMat, plankEntries.length);
@@ -396,11 +511,17 @@ export function buildWorldMeshes(
     for (let i = 0; i < plankEntries.length; i++) {
       const e = plankEntries[i];
       const h = coordHash(e.x, e.y, e.z);
+      const matDef = getWorldMaterial(e.material);
       dummy.position.set(e.x + 0.5, e.y + 0.5, e.z + 0.5);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
-      tmpColor.setHex(plankPalette[Math.floor(h * plankPalette.length) % plankPalette.length]);
+      if (matDef) {
+        tmpColor.setHex(matDef.hex);
+        tmpColor.offsetHSL(0, 0, (h - 0.5) * 0.03);
+      } else {
+        tmpColor.setHex(plankPalette[Math.floor(h * plankPalette.length) % plankPalette.length]);
+      }
       addInstanceCoord(inst, i, dummy.matrix, tmpColor);
     }
     inst.instanceMatrix.needsUpdate = true;
@@ -474,21 +595,47 @@ export function buildWorldMeshes(
     group.add(inst);
   }
 
-  // 6. Sculpted Organic Trees (Curved Trunks + Fluffy Billowing Cloud Canopies!)
+  // 6. Sculpted Organic Trees (Oak, Birch, Pine, Sakura Blossom, & Autumn Amber Canopies!)
   const barkMat = getClayMat('tree_bark', 0x6d4a37, { roughness: 0.86 });
-  const canopyPaletteGreen = [
-    getClayMat('canopy_g1', 0x76aa64, { roughness: 0.74 }),
-    getClayMat('canopy_g2', 0x8bc072, { roughness: 0.72 }),
-    getClayMat('canopy_g3', 0x629653, { roughness: 0.76 }),
-  ];
-  const canopyPaletteSakura = [
-    getClayMat('canopy_s1', 0xf3a8bc, { roughness: 0.68 }),
-    getClayMat('canopy_s2', 0xf8c3d1, { roughness: 0.66 }),
-    getClayMat('canopy_s3', 0xe58fa7, { roughness: 0.7 }),
-  ];
+  const birchBarkMat = getClayMat('birch_bark', 0xdcd5c5, { roughness: 0.8 });
+  const pineBarkMat = getClayMat('pine_bark', 0x5c3e2c, { roughness: 0.9 });
+  const canopyPalettes: Record<string, THREE.MeshStandardMaterial[]> = {
+    oak_foliage: [
+      getClayMat('canopy_g1', 0x76aa64, { roughness: 0.74 }),
+      getClayMat('canopy_g2', 0x8bc072, { roughness: 0.72 }),
+      getClayMat('canopy_g3', 0x629653, { roughness: 0.76 }),
+    ],
+    birch_foliage: [
+      getClayMat('canopy_b1', 0x99ba63, { roughness: 0.72 }),
+      getClayMat('canopy_b2', 0xaec974, { roughness: 0.7 }),
+      getClayMat('canopy_b3', 0x87a955, { roughness: 0.74 }),
+    ],
+    pine_foliage: [
+      getClayMat('canopy_p1', 0x456f54, { roughness: 0.78 }),
+      getClayMat('canopy_p2', 0x528061, { roughness: 0.76 }),
+      getClayMat('canopy_p3', 0x385e47, { roughness: 0.8 }),
+    ],
+    sakura_foliage: [
+      getClayMat('canopy_s1', 0xf3a8bc, { roughness: 0.68 }),
+      getClayMat('canopy_s2', 0xf8c3d1, { roughness: 0.66 }),
+      getClayMat('canopy_s3', 0xe58fa7, { roughness: 0.7 }),
+    ],
+    autumn_foliage: [
+      getClayMat('canopy_a1', 0xdf894c, { roughness: 0.72 }),
+      getClayMat('canopy_a2', 0xe8a556, { roughness: 0.7 }),
+      getClayMat('canopy_a3', 0xc96c3e, { roughness: 0.74 }),
+    ],
+  };
+  const canopyPaletteGreen = canopyPalettes.oak_foliage;
 
   for (const tree of treeDefs) {
     const coord = { x: tree.baseX, y: tree.baseY, z: tree.baseZ };
+    const treeBarkMat =
+      tree.barkMatId === 'birch_bark'
+        ? birchBarkMat
+        : tree.barkMatId === 'pine_bark'
+          ? pineBarkMat
+          : barkMat;
     const treeGrp = new THREE.Group();
     treeGrp.position.set(tree.baseX + 0.5, tree.baseY, tree.baseZ + 0.5);
 
@@ -497,14 +644,14 @@ export function buildWorldMeshes(
     const leanZ = (coordHash(tree.baseZ, 2, tree.baseX) - 0.5) * 0.22;
 
     // Flared base root collar + lower trunk + upper crooked trunk + branches
-    addPart(treeGrp, taperedCylGeo, barkMat, 0, 0.3, 0, 0.76, 0.6, 0.76, coord);
-    const lowTrunk = addPart(treeGrp, taperedCylGeo, barkMat, leanX * 0.3, h * 0.32, leanZ * 0.3, 0.48, h * 0.65, 0.48, coord);
+    addPart(treeGrp, taperedCylGeo, treeBarkMat, 0, 0.3, 0, 0.76, 0.6, 0.76, coord);
+    const lowTrunk = addPart(treeGrp, taperedCylGeo, treeBarkMat, leanX * 0.3, h * 0.32, leanZ * 0.3, 0.48, h * 0.65, 0.48, coord);
     lowTrunk.rotation.set(leanZ * 0.4, 0, -leanX * 0.4);
 
     const topTrunk = addPart(
       treeGrp,
       taperedCylGeo,
-      barkMat,
+      treeBarkMat,
       leanX * 0.8,
       h * 0.75,
       leanZ * 0.8,
@@ -523,7 +670,7 @@ export function buildWorldMeshes(
       const br = addPart(
         treeGrp,
         taperedCylGeo,
-        barkMat,
+        treeBarkMat,
         leanX + Math.cos(ang) * 0.48,
         h * 0.78 + bi * 0.14,
         leanZ + Math.sin(ang) * 0.48,
@@ -539,7 +686,7 @@ export function buildWorldMeshes(
     // Fluffy billowing canopy spheres
     const canopyGrp = new THREE.Group();
     canopyGrp.position.set(leanX, h + 0.1, leanZ);
-    const mats = tree.isBlossom ? canopyPaletteSakura : canopyPaletteGreen;
+    const mats = canopyPalettes[tree.leafMatId] ?? canopyPaletteGreen;
     const puffs: Array<[number, number, number, number]> = [
       [0, 0.65, 0, 1.95],
       [-0.95, 0.2, 0.35, 1.45],
@@ -688,15 +835,22 @@ export function buildWorldMeshes(
 
         const meta = blockMeta[idx];
         const coord = { x, y, z };
+        const blockMatDef = getWorldMaterial(blockMaterials?.[idx]);
 
         // Sculpted Island Underside spires for floating rim
         if (b === BlockId.ROOF_SHINGLE) {
-          // Ribbed tiled roof with ridge caps along top edges
+          // Ribbed tiled roof with ridge caps along top edges (supports terracotta, cedar, slate)
+          const rBase = blockMatDef
+            ? getClayMat(`roof_${blockMatDef.id}`, blockMatDef.hex, { roughness: blockMatDef.roughness })
+            : roofBaseMat;
+          const rRib = blockMatDef
+            ? getClayMat(`roof_rib_${blockMatDef.id}`, blockMatDef.hex, { roughness: Math.max(0.4, blockMatDef.roughness - 0.08) })
+            : roofRibMat;
           const roofGrp = new THREE.Group();
           roofGrp.position.set(x + 0.5, y, z + 0.5);
-          addPart(roofGrp, roundedPlankGeo, roofBaseMat, 0, 0.36, 0, 1.04, 0.56, 1.04, coord);
+          addPart(roofGrp, roundedPlankGeo, rBase, 0, 0.36, 0, 1.04, 0.56, 1.04, coord);
           for (let r = -1; r <= 1; r++) {
-            const rib = addPart(roofGrp, smoothCylGeo, roofRibMat, r * 0.32, 0.64, 0, 0.16, 1.04, 0.16, coord);
+            const rib = addPart(roofGrp, smoothCylGeo, rRib, r * 0.32, 0.64, 0, 0.16, 1.04, 0.16, coord);
             rib.rotation.x = Math.PI * 0.5;
           }
           if (getB(x, y + 1, z) !== BlockId.ROOF_SHINGLE) {
@@ -717,24 +871,38 @@ export function buildWorldMeshes(
           const wGrp = new THREE.Group();
           wGrp.position.set(x + 0.5, y + 0.5, z + 0.5);
           const frame = getClayMat('win_frame', 0x8b6240, { roughness: 0.72 });
+          const paneMat =
+            blockMatDef && blockMatDef.id === 'stained_glass'
+              ? getClayMat('glass_azure', blockMatDef.hex, {
+                  transparent: true,
+                  opacity: blockMatDef.opacity ?? 0.64,
+                  roughness: 0.1,
+                })
+              : glassPaneMat;
           addPart(wGrp, roundedPlankGeo, frame, 0, -0.45, 0, 1.04, 0.1, 1.04, coord);
           addPart(wGrp, roundedPlankGeo, frame, 0, 0.45, 0, 1.04, 0.1, 1.04, coord);
           addPart(wGrp, roundedPlankGeo, frame, -0.45, 0, 0, 0.1, 0.9, 1.02, coord);
           addPart(wGrp, roundedPlankGeo, frame, 0.45, 0, 0, 0.1, 0.9, 1.02, coord);
           addPart(wGrp, roundedPlankGeo, frame, 0, 0, 0, 0.06, 0.84, 0.9, coord);
-          addPart(wGrp, roundedPlankGeo, glassPaneMat, 0, 0, 0, 0.88, 0.84, 0.88, coord, false);
+          addPart(wGrp, roundedPlankGeo, paneMat, 0, 0, 0, 0.88, 0.84, 0.88, coord, false);
           group.add(wGrp);
           continue;
         }
 
         if (b === BlockId.WOOD_LOG) {
           // Standalone placed timber log
-          addPart(group, smoothCylGeo, barkMat, x + 0.5, y + 0.5, z + 0.5, 0.78, 1.0, 0.78, coord);
+          const logMat = blockMatDef
+            ? getClayMat(`log_${blockMatDef.id}`, blockMatDef.hex, { roughness: blockMatDef.roughness })
+            : barkMat;
+          addPart(group, smoothCylGeo, logMat, x + 0.5, y + 0.5, z + 0.5, 0.78, 1.0, 0.78, coord);
           continue;
         }
 
         if (b === BlockId.LEAVES) {
-          addPart(group, smoothSphereGeo, canopyPaletteGreen[0], x + 0.5, y + 0.5, z + 0.5, 1.15, 1.05, 1.15, coord);
+          const leafMat = blockMatDef
+            ? getClayMat(`leaf_${blockMatDef.id}`, blockMatDef.hex, { roughness: blockMatDef.roughness })
+            : canopyPaletteGreen[0];
+          addPart(group, smoothSphereGeo, leafMat, x + 0.5, y + 0.5, z + 0.5, 1.15, 1.05, 1.15, coord);
           continue;
         }
 

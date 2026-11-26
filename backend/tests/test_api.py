@@ -194,3 +194,22 @@ def test_module_exposes_asgi_app():
     assert asgi_app is not None
     with TestClient(asgi_app) as client:
         assert client.get('/api/health').json()['ok'] is True
+
+
+def test_world_init_includes_materials_and_spawn_material_delta():
+    with TestClient(client_app()) as client:
+        client.post('/api/sim/control', json={'action': 'pause'})
+        with client.websocket_connect('/ws') as ws:
+            initial = ws.receive_json()
+            assert len(initial['block_materials']) == 24576
+            assert 'crystal_vein' in initial['materials_catalog']
+            res = client.post('/api/god/intervene', json={
+                'action': 'spawn_object',
+                'value': {'object': 'marble', 'x': 14, 'y': 11, 'z': 14},
+            })
+            assert res.status_code == 200
+            delta = next_type(ws, 'tick_update')
+            assert any(
+                u['x'] == 14 and u['y'] == 11 and u['z'] == 14 and u.get('material') == 'marble'
+                for u in delta['block_updates']
+            )

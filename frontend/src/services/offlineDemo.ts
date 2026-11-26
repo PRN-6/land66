@@ -1,3 +1,4 @@
+import { getWorldMaterial } from '../engine/materialCatalog';
 import {
   BlockId,
   WORLD_DEPTH,
@@ -129,6 +130,7 @@ const AGENT_NAMES = ['Elena', 'Rowan', 'Maya', 'Soren', 'Clara', 'Leo', 'Nora'];
 export class OfflineDemoSimulator {
   private blocks = new Uint8Array(WORLD_VOLUME);
   private blockMeta = new Uint8Array(WORLD_VOLUME);
+  private blockMaterials: string[] = new Array(WORLD_VOLUME).fill('');
   private rng = mulberry32(6601);
   private state: WorldStateSnapshot;
   private surfaceY = new Int8Array(WORLD_WIDTH * WORLD_DEPTH);
@@ -237,6 +239,7 @@ export class OfflineDemoSimulator {
       index_formula: 'y * width * depth + z * width + x',
       blocks: Array.from(this.blocks),
       block_meta: Array.from(this.blockMeta),
+      block_materials: Array.from(this.blockMaterials),
       state: this.getState(),
     };
   }
@@ -330,11 +333,12 @@ export class OfflineDemoSimulator {
     this.extraAgents = this.extraAgents.filter((a) => a.id !== agentId);
   }
 
-  private setBlock(x: number, y: number, z: number, block: number, meta = 0): void {
+  private setBlock(x: number, y: number, z: number, block: number, meta = 0, material = ''): void {
     if (x < 0 || x >= WORLD_WIDTH || y < 0 || y >= WORLD_HEIGHT || z < 0 || z >= WORLD_DEPTH) return;
     const idx = blockIndex(x, y, z);
     this.blocks[idx] = block;
     this.blockMeta[idx] = meta;
+    this.blockMaterials[idx] = block === BlockId.AIR ? '' : material;
   }
 
   private getBlock(x: number, y: number, z: number): number {
@@ -355,6 +359,7 @@ export class OfflineDemoSimulator {
   private generateIsland(seed: number): void {
     this.blocks.fill(BlockId.AIR);
     this.blockMeta.fill(0);
+    this.blockMaterials.fill('');
     this.surfaceY.fill(-1);
     this.rng = mulberry32(seed);
     this.actionTimer = 0;
@@ -385,11 +390,12 @@ export class OfflineDemoSimulator {
 
         for (let y = bottomY; y <= topY; y++) {
           if (y === topY) {
-            this.setBlock(x, y, z, BlockId.GRASS);
+            this.setBlock(x, y, z, BlockId.GRASS, 0, dist > 0.58 ? 'forest_grass' : 'meadow_grass');
           } else if (y >= topY - 2) {
             this.setBlock(x, y, z, BlockId.DIRT);
           } else {
-            this.setBlock(x, y, z, BlockId.STONE);
+            const deepMat = y <= 4 ? 'obsidian' : y === 5 && (x + z) % 7 === 0 ? 'sunstone' : y < 7 ? 'slate' : 'granite';
+            this.setBlock(x, y, z, BlockId.STONE, 0, deepMat);
           }
         }
         this.surfaceY[z * WORLD_WIDTH + x] = topY;
@@ -406,13 +412,17 @@ export class OfflineDemoSimulator {
             this.setBlock(x, y, z, BlockId.AIR);
           }
           this.setBlock(x, waterY, z, BlockId.WATER);
-          this.setBlock(x, waterY - 1, z, BlockId.DIRT);
+          this.setBlock(x, waterY - 1, z, BlockId.DIRT, 0, x % 2 === 0 ? 'clay_bank' : 'sandy_bank');
           this.surfaceY[z * WORLD_WIDTH + x] = waterY;
+        } else if (sy > 0 && pd <= 3.1 && this.getBlock(x, sy, z) === BlockId.GRASS) {
+          this.setBlock(x, sy, z, BlockId.DIRT, 0, x > pondCx ? 'sandy_bank' : 'clay_bank');
         }
       }
     }
 
     let treeCount = 0;
+    const boulderMats = ['granite', 'mossy_stone', 'iron_vein', 'coal_vein', 'gold_vein', 'crystal_vein', 'copper_vein', 'marble'];
+    let boulderIdx = 0;
     const treePositions: Array<{ x: number; z: number }> = [];
     for (let z = 4; z < WORLD_DEPTH - 4; z++) {
       for (let x = 4; x < WORLD_WIDTH - 4; x++) {
@@ -430,8 +440,9 @@ export class OfflineDemoSimulator {
           treeCount++;
         } else if (r >= 0.18 && r < 0.215) {
           this.setBlock(x, sy + 1, z, BlockId.WILD_BERRY);
-        } else if (r >= 0.215 && r < 0.238) {
-          this.setBlock(x, sy + 1, z, BlockId.STONE);
+        } else if (r >= 0.215 && r < 0.242) {
+          this.setBlock(x, sy + 1, z, BlockId.STONE, 0, boulderMats[boulderIdx % boulderMats.length]);
+          boulderIdx += 1;
         }
       }
     }
@@ -533,10 +544,13 @@ export class OfflineDemoSimulator {
   }
 
   private placeTree(x: number, baseY: number, z: number, updates?: BlockUpdate[]): void {
+    const species = ['oak', 'birch', 'pine', 'oak', 'sakura', 'autumn'][Math.abs(x * 7 + z * 11) % 6];
+    const barkMat = species === 'birch' ? 'birch_bark' : species === 'pine' ? 'pine_bark' : 'oak_bark';
+    const leafMat = `${species}_foliage`;
     const trunkH = 3 + Math.floor(this.rng() * 2);
     for (let dy = 0; dy < trunkH; dy++) {
-      this.setBlock(x, baseY + dy, z, BlockId.WOOD_LOG);
-      updates?.push({ x, y: baseY + dy, z, block: BlockId.WOOD_LOG, meta: 0 });
+      this.setBlock(x, baseY + dy, z, BlockId.WOOD_LOG, 0, barkMat);
+      updates?.push({ x, y: baseY + dy, z, block: BlockId.WOOD_LOG, meta: 0, material: barkMat });
     }
     const top = baseY + trunkH;
     for (let dy = -1; dy <= 1; dy++) {
@@ -549,8 +563,8 @@ export class OfflineDemoSimulator {
           const by = top + dy;
           const bz = z + dz;
           if (this.getBlock(bx, by, bz) === BlockId.AIR) {
-            this.setBlock(bx, by, bz, BlockId.LEAVES);
-            updates?.push({ x: bx, y: by, z: bz, block: BlockId.LEAVES, meta: 0 });
+            this.setBlock(bx, by, bz, BlockId.LEAVES, 0, leafMat);
+            updates?.push({ x: bx, y: by, z: bz, block: BlockId.LEAVES, meta: 0, material: leafMat });
           }
         }
       }
@@ -974,7 +988,7 @@ export class OfflineDemoSimulator {
         this.state.stats.trees_count += 1;
       }
     } else if (action === 'spawn_object' && typeof value === 'object' && value !== null) {
-      const v = value as { object?: string | number; x?: number; y?: number; z?: number; meta?: number };
+      const v = value as { object?: string | number; material?: string; x?: number; y?: number; z?: number; meta?: number };
       const tx = typeof v.x === 'number' ? v.x : Math.max(4, Math.min(27, this.state.npc.grid_pos.x + 2));
       const tz = typeof v.z === 'number' ? v.z : Math.max(4, Math.min(27, this.state.npc.grid_pos.z));
       const ty = typeof v.y === 'number' ? v.y : Math.max(1, this.surfaceTopAt(tx, tz) + 1);
@@ -982,7 +996,13 @@ export class OfflineDemoSimulator {
         this.placeTree(tx, ty, tz, updates);
         this.state.stats.trees_count += 1;
       } else {
-        const bid = typeof v.object === 'number' ? v.object : OBJECT_NAME_MAP[String(v.object ?? '')];
+        const directMat = typeof v.object === 'string' ? getWorldMaterial(v.object) : undefined;
+        const explicitMat = typeof v.material === 'string' ? getWorldMaterial(v.material) : undefined;
+        const matId = explicitMat?.id ?? directMat?.id ?? '';
+        const bid =
+          typeof v.object === 'number'
+            ? v.object
+            : OBJECT_NAME_MAP[String(v.object ?? '')] ?? directMat?.block;
         if (bid !== undefined) {
           if (bid === BlockId.CROP_WHEAT) {
             this.setBlock(tx, ty - 1, tz, BlockId.FARMLAND, 1);
@@ -991,8 +1011,8 @@ export class OfflineDemoSimulator {
             updates.push({ x: tx, y: ty, z: tz, block: BlockId.CROP_WHEAT, meta: 3 });
           } else {
             const meta = v.meta ?? (bid === BlockId.FARMLAND ? 1 : 0);
-            this.setBlock(tx, ty, tz, bid, meta);
-            updates.push({ x: tx, y: ty, z: tz, block: bid, meta });
+            this.setBlock(tx, ty, tz, bid, meta, matId);
+            updates.push({ x: tx, y: ty, z: tz, block: bid, meta, ...(matId ? { material: matId } : {}) });
             if (bid === BlockId.DOOR_CLOSED && ty + 1 < WORLD_HEIGHT) {
               this.setBlock(tx, ty + 1, tz, bid, 0);
               updates.push({ x: tx, y: ty + 1, z: tz, block: bid, meta: 0 });
@@ -1089,6 +1109,11 @@ export class OfflineDemoSimulator {
         depth: WORLD_DEPTH,
         blocks: Array.from(this.blocks),
         meta: Array.from(this.blockMeta),
+        materials: Object.fromEntries(
+          this.blockMaterials
+            .map((mat, idx) => (mat ? [String(idx), mat] : null))
+            .filter((entry): entry is [string, string] => entry !== null),
+        ),
       },
       entities: this.demoEntities.map((e) => ({ ...e })),
       agents: state.agents?.map((a, idx) => serializeAgent(a, idx)) ?? [serializeAgent(state.npc, 0)],
@@ -1106,6 +1131,20 @@ export class OfflineDemoSimulator {
       throw new Error(`Invalid save file: expected ${WORLD_VOLUME} block_meta entries.`);
     }
 
+    this.blockMaterials.fill('');
+    const rawMats = payload.world.materials;
+    if (Array.isArray(rawMats)) {
+      for (let i = 0; i < Math.min(WORLD_VOLUME, rawMats.length); i++) {
+        this.blockMaterials[i] = typeof rawMats[i] === 'string' ? rawMats[i] : '';
+      }
+    } else if (rawMats && typeof rawMats === 'object') {
+      for (const [k, val] of Object.entries(rawMats)) {
+        const idx = Number(k);
+        if (Number.isInteger(idx) && idx >= 0 && idx < WORLD_VOLUME && typeof val === 'string') {
+          this.blockMaterials[idx] = val;
+        }
+      }
+    }
     for (let i = 0; i < WORLD_VOLUME; i++) {
       this.blocks[i] = Number(blocks[i]) & 0xff;
       this.blockMeta[i] = Array.isArray(meta) ? Number(meta[i]) & 0xff : 0;

@@ -26,11 +26,28 @@ MATERIALS = {
     "linen_bedding": dict(block=12, color="#dfd1ae", roughness=1, metalness=0, texture="woven"),
     "clear_glass": dict(block=9, color="#c3e5e7", roughness=.08, metalness=0, transmission=.85, texture="glass"),
     "copper_lantern": dict(block=15, color="#d79b5a", roughness=.5, metalness=.6, emission="#ffc277", texture="metal"),
+    "gold_vein": dict(block=3, color="#e0b548", roughness=.40, metalness=.78, texture="ore", label="Gold Vein"),
+    "copper_vein": dict(block=3, color="#c6784e", roughness=.46, metalness=.74, texture="ore", label="Copper Vein"),
+    "crystal_vein": dict(block=3, color="#70dce3", roughness=.18, metalness=.15, emission="#4dd6e0", texture="crystal", label="Crystal Vein"),
+    "marble": dict(block=3, color="#eeeae2", roughness=.32, metalness=.04, texture="marble", label="White Marble"),
+    "obsidian": dict(block=3, color="#252430", roughness=.22, metalness=.38, texture="obsidian", label="Obsidian"),
+    "sunstone": dict(block=3, color="#f7c866", roughness=.28, metalness=.10, emission="#ffc85c", texture="crystal", label="Sunstone"),
+    "sandstone": dict(block=8, color="#e1c78f", roughness=.86, metalness=0, texture="sandstone", label="Sandstone"),
+    "mossy_brick": dict(block=8, color="#7d8c6c", roughness=.90, metalness=0, texture="brick_bond", label="Mossy Brick"),
+    "copper_block": dict(block=8, color="#cc7b52", roughness=.36, metalness=.85, texture="metal", label="Copper Block"),
+    "walnut_boards": dict(block=7, color="#6b4a36", roughness=.72, metalness=0, texture="wood_grain", label="Walnut Planks"),
+    "bamboo_planks": dict(block=7, color="#c8cc7e", roughness=.62, metalness=0, texture="bamboo", label="Bamboo Panels"),
+    "sakura_foliage": dict(block=6, color="#f4a8be", roughness=.68, metalness=0, texture="blossom", label="Sakura Leaves"),
+    "autumn_foliage": dict(block=6, color="#df894c", roughness=.72, metalness=0, texture="foliage", label="Autumn Leaves"),
+    "stained_glass": dict(block=9, color="#9bc4e8", roughness=.12, metalness=.05, transmission=.80, texture="glass", label="Azure Glass"),
+    "slate_roof": dict(block=20, color="#496572", roughness=.66, metalness=0, texture="overlapping_tiles", label="Slate Roof"),
 }
 
 BASE_ITEMS = ("wood_log", "wood_plank", "stone", "seeds", "wheat", "berries", "sapling", "bread")
-EXTRA_ITEMS = ("fiber", "clay", "sand", "iron_ore", "coal", "rope", "cloth", "brick", "glass_pane",
-               "iron_ingot", "nails", "shingles", "firewood", "soap", "bedding", "axe", "pickaxe", "hammer",
+EXTRA_ITEMS = ("fiber", "clay", "sand", "iron_ore", "coal", "gold_ore", "crystal", "copper_ore",
+               "marble", "obsidian", "sandstone", "sunstone", "bamboo",
+               "rope", "cloth", "brick", "glass_pane", "iron_ingot", "gold_ingot", "copper_ingot",
+               "nails", "shingles", "firewood", "soap", "bedding", "axe", "pickaxe", "hammer",
                "table", "chair", "stove", "rain_barrel", "washbasin", "pantry", "compost_bin", "lantern", "compost")
 INVENTORY_KEYS = BASE_ITEMS + EXTRA_ITEMS
 ITEMS = {key: {"name": key.replace("_", " ").title(), "category": "raw_material"} for key in INVENTORY_KEYS}
@@ -73,6 +90,9 @@ RECIPES = {
     "compost_bin": recipe({"wood_plank": 4, "rope": 1}, {"compost_bin": 1}, 3, "crafting_bench"),
     "lantern": recipe({"iron_ingot": 1, "glass_pane": 1, "coal": 1}, {"lantern": 1}, 4, "crafting_bench"),
     "compost": recipe({"fiber": 3}, {"compost": 2}, 4, "compost_bin"),
+    "gold_ingot": recipe({"gold_ore": 2, "coal": 1}, {"gold_ingot": 2}, 6),
+    "copper_ingot": recipe({"copper_ore": 2, "coal": 1}, {"copper_ingot": 2}, 5),
+    "sunstone": recipe({"crystal": 2, "gold_ingot": 1}, {"sunstone": 1}, 5, "crafting_bench"),
 }
 
 FIXTURES = {
@@ -91,7 +111,7 @@ REPAIRS = {
     "foundation": {"stone": 2},
     "furniture": {"wood_plank": 1, "cloth": 1},
 }
-RESOURCE_KINDS = ("fiber", "clay", "sand", "iron_ore", "coal")
+RESOURCE_KINDS = ("fiber", "clay", "sand", "iron_ore", "coal", "gold_ore", "crystal", "copper_ore")
 TOOL_FOR_ACTION = {"chop": "axe", "mine": "pickaxe", "gather": "pickaxe", "build": "hammer", "repair": "hammer"}
 
 

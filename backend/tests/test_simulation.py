@@ -236,3 +236,17 @@ def test_simulation_save_load_roundtrip():
     assert restored.agents[elena.id].thought == 'Finish the roof shingles today.'
     restored.step(0.2, force=True)
     assert restored.tick == s.tick + 1
+
+
+def test_world_new_materials_and_spawn():
+    s = Simulation(seed=66)
+    mats = set(s.world.materials)
+    assert {'gold_vein', 'crystal_vein', 'marble', 'obsidian', 'sunstone'} <= mats
+    kinds = {n['kind'] for n in s.world.resource_nodes.values()}
+    assert {'gold_ore', 'crystal', 'copper_ore'} <= kinds
+
+    s.intervene('spawn_object', {'object': 'crystal_vein', 'x': 15, 'y': 11, 'z': 15})
+    assert s.world.get(15, 11, 15) == 3
+    assert s.world.materials[s.world.index(15, 11, 15)] == 'crystal_vein'
+    updates = s.world.drain_updates()
+    assert any(u['x'] == 15 and u['z'] == 15 and u.get('material') == 'crystal_vein' for u in updates)

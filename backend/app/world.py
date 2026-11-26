@@ -173,7 +173,8 @@ class World:
         if not self.inside(x, y + 5, z):
             return False
         # Stable species selection does not depend on unrelated decoration RNG calls.
-        species = ("oak", "birch", "pine")[(x * 7 + z * 11 + self.seed) % 3]
+        species = ("oak", "birch", "pine", "oak", "sakura", "autumn")[(x * 7 + z * 11 + self.seed) % 6]
+        bark = "birch_bark" if species == "birch" else "pine_bark" if species == "pine" else "oak_bark"
         # Leaves start high enough to preserve two-block pedestrian clearance.
         for dy in (3, 4, 5):
             radius = 1 if dy == 5 or (species == "birch" and dy == 3) else 2
@@ -184,7 +185,7 @@ class World:
                         self.set_material((x + dx, y + dy, z + dz), species + "_foliage")
         for dy in range(4):
             self.set(x, y + dy, z, LOG)
-            self.set_material((x, y + dy, z), species + "_bark")
+            self.set_material((x, y + dy, z), bark)
         return True
 
     def generate_details(self):
@@ -222,6 +223,16 @@ class World:
             kind = "iron_ore" if i % 2 else "coal"
             self.set_material(p, "iron_vein" if kind=="iron_ore" else "coal_vein")
             self.add_resource(kind,p,40)
+        for i, p in enumerate(stone[16:25]):
+            kind, mat, cap = (("gold_ore", "gold_vein", 24), ("crystal", "crystal_vein", 20), ("copper_ore", "copper_vein", 32))[i % 3]
+            self.set_material(p, mat)
+            self.add_resource(kind, p, cap)
+        for p in stone[25:28]:
+            self.set_material(p, "marble")
+        deep_crust = [p for p in self.positions(STONE) if p[1] <= 5]
+        rng.shuffle(deep_crust)
+        for p in deep_crust[:18]:
+            self.set_material(p, "obsidian" if p[1] <= 4 else "sunstone")
         fiber_sites = [p for p in grass if self.get(*p)==GRASS and self.get(p[0],p[1]+1,p[2]) in {AIR,BERRY}
                        and not (11<=p[0]<=21 and 11<=p[2]<=21)]
         rng.shuffle(fiber_sites)

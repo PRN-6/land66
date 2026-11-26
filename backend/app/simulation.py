@@ -924,10 +924,12 @@ class Simulation:
         return dict(
             type="world_init", dimensions=dict(width=32, height=24, depth=32),
             index_formula="y * width * depth + z * width + x", blocks=list(self.world.blocks),
-            block_meta=list(self.world.meta), palette={str(k): v for k, v in PALETTE.items()}, state=self.snapshot(),
+            block_meta=list(self.world.meta), block_materials=list(self.world.materials),
+            materials_catalog=MATERIALS, palette={str(k): v for k, v in PALETTE.items()},
+            state=self.snapshot(),
         )
 
-    def change_block(self, p: Pos, block: int, meta: int = 0):
+    def change_block(self, p: Pos, block: int, meta: int = 0, material: str = ""):
         old = self.world.get(*p)
         if self.world.set(*p, block, meta):
             if old != block:
@@ -935,6 +937,8 @@ class Simulation:
                     self.blocks_broken += 1
                 if block != AIR:
                     self.blocks_placed += 1
+        if material:
+            self.world.set_material(p, material)
 
     def update_ecology(self, dt: float):
         w = self.world
@@ -1085,10 +1089,14 @@ class Simulation:
             if not p or p in occupied or not self.world.grow_tree(p):
                 raise ValueError("No suitable clear spot for tree")
             return
+        mat = str(value.get("material") or "").strip()
         if isinstance(obj, int):
             block_id = obj
         elif isinstance(obj, str) and obj in OBJECT_NAME_TO_BLOCK:
             block_id = OBJECT_NAME_TO_BLOCK[obj]
+        elif isinstance(obj, str) and obj in MATERIALS:
+            mat = obj
+            block_id = MATERIALS[obj]["block"]
         else:
             raise ValueError("Unsupported world object")
         if has_xz:
@@ -1112,7 +1120,7 @@ class Simulation:
                 self.change_block((p[0], p[1] + 1, p[2]), DOOR)
             return
         meta = int(value.get("meta", 1 if block_id == FARMLAND else 0)) if type(value.get("meta")) is int else (1 if block_id == FARMLAND else 0)
-        self.change_block(p, block_id, meta)
+        self.change_block(p, block_id, meta, material=mat)
         if block_id == SAPLING:
             self.sapling_age[p] = 0.0
 

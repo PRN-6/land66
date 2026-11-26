@@ -1,4 +1,5 @@
 import { Box, User, Users, X } from 'lucide-react';
+import { getWorldMaterial } from '../engine/materialCatalog';
 import {
   BLOCK_LABELS,
   BlockId,
@@ -60,11 +61,14 @@ export function InspectToast({ target, state, agents, onClose }: InspectToastPro
               </>
             ) : target.kind === 'block' ? (
               <>
-                <div className="text-xs font-semibold text-white">
-                  {BLOCK_LABELS[target.block] ?? `Block #${target.block}`}
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  <span>
+                    {getWorldMaterial(target.material)?.label ?? BLOCK_LABELS[target.block] ?? `Block #${target.block}`}
+                  </span>
                 </div>
                 <div className="text-[11px] text-neutral-400 font-mono">
                   ({target.x}, {target.y}, {target.z})
+                  {target.material ? ` · ${BLOCK_LABELS[target.block] ?? 'Block'}` : ''}
                 </div>
               </>
             ) : null}
@@ -74,6 +78,22 @@ export function InspectToast({ target, state, agents, onClose }: InspectToastPro
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
+
+      {target.kind === 'block' && target.material && (() => {
+        const m = getWorldMaterial(target.material);
+        return m ? (
+          <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-neutral-300 flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <span
+                className="w-2.5 h-2.5 rounded-full border border-white/20 shrink-0"
+                style={{ backgroundColor: m.colorCss }}
+              />
+              <span>{m.group} Material</span>
+            </span>
+            <span className="font-mono capitalize text-neutral-400">{m.finish}</span>
+          </div>
+        ) : null;
+      })()}
 
       {target.kind === 'block' && target.block === BlockId.CROP_WHEAT && (
         <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-neutral-300 flex justify-between">

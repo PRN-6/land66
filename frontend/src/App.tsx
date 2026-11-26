@@ -220,6 +220,7 @@ export function App() {
         } else if (tool.mode === 'object') {
           void handleGodIntervene('spawn_object', {
             object: tool.object,
+            ...(tool.material ? { material: tool.material } : {}),
             x: placeCoord.x,
             y: placeCoord.y,
             z: placeCoord.z,

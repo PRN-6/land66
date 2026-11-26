@@ -239,6 +239,7 @@ export interface BlockUpdate {
   z: number;
   block: number;
   meta?: number;
+  material?: string;
 }
 
 export interface WorldInitMessage {
@@ -247,6 +248,7 @@ export interface WorldInitMessage {
   index_formula: string;
   blocks: number[];
   block_meta: number[];
+  block_materials?: string[];
   palette?: Record<string, string>;
   state: WorldStateSnapshot;
 }
@@ -339,6 +341,7 @@ export type InspectTarget =
       z: number;
       block: number;
       meta: number;
+      material?: string;
     }
   | {
       kind: 'npc';
@@ -352,7 +355,7 @@ export type InspectTarget =
 export type GodTool =
   | { mode: 'inspect' }
   | { mode: 'erase' }
-  | { mode: 'object'; object: string; label: string }
+  | { mode: 'object'; object: string; label: string; material?: string }
   | { mode: 'entity'; kind: EntityKind; label: string; customName?: string }
   | { mode: 'agent'; role: AgentRole; label: string; customName?: string };
 
