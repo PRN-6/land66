@@ -11,10 +11,47 @@ from .pathfinding import astar, path_to_any
 from .world import (
     World, Pos, PALETTE, AIR, GRASS, DIRT, STONE, WATER, LOG, LEAVES,
     PLANK, COBBLE, GLASS, DOOR, OPEN_DOOR, BED, CHEST, BENCH, TORCH,
-    FARMLAND, WHEAT, BERRY, SAPLING, ROOF,
+    FARMLAND, WHEAT, BERRY, SAPLING, ROOF, FENCE,
 )
 
 INVENTORY_KEYS = ("wood_log", "wood_plank", "stone", "seeds", "wheat", "berries", "sapling", "bread")
+OBJECT_NAME_TO_BLOCK = {
+    "grass": GRASS,
+    "dirt": DIRT,
+    "stone": STONE,
+    "water": WATER,
+    "wood_log": LOG,
+    "leaves": LEAVES,
+    "wood_plank": PLANK,
+    "cobblestone": COBBLE,
+    "glass": GLASS,
+    "door_closed": DOOR,
+    "door": DOOR,
+    "bed": BED,
+    "chest": CHEST,
+    "crafting_bench": BENCH,
+    "torch": TORCH,
+    "lantern": TORCH,
+    "farmland": FARMLAND,
+    "crop_wheat": WHEAT,
+    "wheat": WHEAT,
+    "wild_berry": BERRY,
+    "berry": BERRY,
+    "sapling": SAPLING,
+    "roof_shingle": ROOF,
+    "roof": ROOF,
+    "fence": FENCE,
+}
+ENTITY_KINDS = ("companion", "villager", "cat", "fox", "sheep", "deer", "duck")
+ENTITY_DEFAULT_NAMES = {
+    "companion": ["Elena", "Rowan", "Maya", "Soren"],
+    "villager": ["Clara", "Leo", "Nora", "Finn"],
+    "cat": ["Mochi", "Yuzu", "Biscuit", "Luna"],
+    "fox": ["Rusty", "Maple", "Ember", "Pip"],
+    "sheep": ["Cloud", "Bramble", "Puff", "Cotton"],
+    "deer": ["Willow", "Fern", "Bambi", "Aspen"],
+    "duck": ["Puddle", "Quack", "Sunny", "Pippin"],
+}
 DAY_SECONDS = 360.0
 DURATIONS = {"idle": 2, "explore": .3, "walk": .1, "forage": 2, "drink": 2.5,
              "eat": 2, "sleep": 20, "chop": 4, "mine": 2.5, "craft": 2,
@@ -100,6 +137,8 @@ class Simulation:
         self.last_plant_time = -999.0
         self.last_weather_period = int(self.elapsed // 90)
         self.queued_decision: Decision | None = None
+        self.entities: list[dict] = []
+        self.entity_counter = 0
         self.llm_status = dict(provider="fallback", model="", thinking=False, last_latency_ms=0,
                                calls_count=0, fallback_active=True, last_error=None)
         self.remember("Woke on a floating island with empty pockets.")
@@ -164,6 +203,9 @@ class Simulation:
         for kind, points in groups.items():
             for p in sorted(points, key=lambda p: (distance(self.position, p), p))[:3]:
                 nearby.append(dict(type=kind, position=xyz(p), distance=round(distance(self.position, p), 2)))
+        for ent in sorted(self.entities, key=lambda e: distance(self.position, (e["position"]["x"], e["position"]["y"], e["position"]["z"])))[:4]:
+            ep = (ent["position"]["x"], ent["position"]["y"], ent["position"]["z"])
+            nearby.append(dict(type=ent["kind"], label=f"{ent['name']} ({ent['kind']})", position=ent["grid_pos"], distance=round(distance(self.position, ep), 2)))
         visible = [f"{e['type']} {e['distance']:.0f} blocks away" for e in nearby if e['distance'] <= 12]
         location = ("inside my house" if shelter["sheltered"] else "beside the pond" if any(e['type'] == 'water' and e['distance'] < 4 for e in nearby)
                     else "in the forest" if any(e['type'] == 'tree' and e['distance'] < 4 for e in nearby) else "in the grassy clearing")
@@ -189,7 +231,9 @@ class Simulation:
                                farm_plots=len(self.world.locations[FARMLAND]),
                                crops_growing=sum(self.world.get_meta(*p) < 3 for p in crops),
                                crops_ripe=sum(self.world.get_meta(*p) == 3 for p in crops),
-                               blocks_placed=self.blocks_placed, blocks_broken=self.blocks_broken),
+                               blocks_placed=self.blocks_placed, blocks_broken=self.blocks_broken,
+                               entities_count=len(self.entities)),
+                    entities=[dict(e) for e in self.entities],
                     llm_status=dict(self.llm_status))
 
     def world_init(self):
@@ -548,6 +592,7 @@ class Simulation:
                 self.weather = self.rng.choices(["clear", "rain", "storm"], [7, 2, 1])[0]
         self.update_ecology(dt)
         self.update_needs(dt)
+        self.update_entities(dt)
         # Emergency needs interrupt at the next tile boundary, never snapping mid-stride.
         if self.job and not self.path and min(self.needs["hunger"], self.needs["thirst"]) < 15 and self.current_action not in {"eat", "drink", "forage", "craft"}:
             self.job = None
@@ -618,5 +663,163 @@ class Simulation:
             p = (x,value["y"],z) if "y" in value else self.world.feet_at(x,z)
             if not p or not self.world.inside(*p) or (10<=x<=25 and 10<=z<=21) or (x,z)==(self.grid_pos[0],self.grid_pos[2]) or not self.world.grow_tree(p):
                 raise ValueError("Tree needs clear natural ground outside the house/farm clearing")
+        elif action == "spawn_object":
+            self._intervene_spawn_object(value)
+        elif action == "remove_block":
+            if not isinstance(value, dict) or any(type(value.get(k)) is not int for k in ("x", "y", "z")):
+                raise ValueError("remove_block needs integer x, y, z")
+            p = (value["x"], value["y"], value["z"])
+            under = (self.grid_pos[0], self.grid_pos[1] - 1, self.grid_pos[2])
+            if p == under or not self.world.inside(*p):
+                raise ValueError("Cannot erase block under NPC feet or outside world")
+            self.change_block(p, AIR)
+        elif action == "spawn_entity":
+            self._intervene_spawn_entity(value)
+        elif action == "clear_entities":
+            self.entities.clear()
         else:
             raise ValueError("Unknown intervention")
+
+    def _find_open_spot(self, preferred: tuple[int, int, int] | None = None) -> Pos | None:
+        if preferred and self.world.walkable(preferred):
+            return preferred
+        if preferred:
+            f = self.world.feet_at(preferred[0], preferred[2], preferred[1])
+            if f:
+                return f
+        candidates = []
+        gx, gy, gz = self.grid_pos
+        for dx in range(-8, 9):
+            for dz in range(-8, 9):
+                if abs(dx) + abs(dz) < 2:
+                    continue
+                p = self.world.feet_at(gx + dx, gz + dz, gy)
+                if p and self.world.get(*p) == AIR:
+                    candidates.append(p)
+        return self.rng.choice(candidates) if candidates else None
+
+    def _intervene_spawn_object(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            raise ValueError("spawn_object requires an object payload")
+        obj = value.get("object")
+        x, y, z = value.get("x"), value.get("y"), value.get("z")
+        has_xz = type(x) is int and type(z) is int
+        if obj == "tree":
+            p = (x, y, z) if has_xz and type(y) is int else self.world.feet_at(x, z) if has_xz else self._find_open_spot()
+            if not p or p == self.grid_pos or not self.world.grow_tree(p):
+                raise ValueError("No suitable clear spot for tree")
+            return
+        if isinstance(obj, int):
+            block_id = obj
+        elif isinstance(obj, str) and obj in OBJECT_NAME_TO_BLOCK:
+            block_id = OBJECT_NAME_TO_BLOCK[obj]
+        else:
+            raise ValueError("Unsupported world object")
+        if has_xz:
+            if type(y) is int:
+                p = (x, y, z)
+            else:
+                p = self.world.feet_at(x, z)
+        else:
+            p = self._find_open_spot()
+        if not p or not self.world.inside(*p):
+            raise ValueError("Target coordinate outside world")
+        if p == self.grid_pos and block_id not in {AIR, WATER, TORCH, SAPLING, WHEAT, BERRY}:
+            raise ValueError("Cannot place solid block onto NPC position")
+        if block_id == WHEAT:
+            below = (p[0], p[1] - 1, p[2])
+            if self.world.get(*below) in {GRASS, DIRT}:
+                self.change_block(below, FARMLAND, 1)
+            self.change_block(p, WHEAT, int(value.get("meta", 3)) if type(value.get("meta")) is int else 3)
+            self.crop_age[p] = 75.0
+            return
+        if block_id == DOOR:
+            self.change_block(p, DOOR)
+            if self.world.inside(p[0], p[1] + 1, p[2]) and self.world.get(p[0], p[1] + 1, p[2]) == AIR:
+                self.change_block((p[0], p[1] + 1, p[2]), DOOR)
+            return
+        meta = int(value.get("meta", 1 if block_id == FARMLAND else 0)) if type(value.get("meta")) is int else (1 if block_id == FARMLAND else 0)
+        self.change_block(p, block_id, meta)
+        if block_id == SAPLING:
+            self.sapling_age[p] = 0.0
+
+    def _intervene_spawn_entity(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            raise ValueError("spawn_entity requires an object payload")
+        kind = str(value.get("kind", "cat")).lower()
+        if kind not in ENTITY_KINDS:
+            raise ValueError(f"kind must be one of {ENTITY_KINDS}")
+        if len(self.entities) >= 24:
+            raise ValueError("Maximum 24 creatures/companions on this island")
+        x, y, z = value.get("x"), value.get("y"), value.get("z")
+        pref = (x, y, z) if type(x) is int and type(y) is int and type(z) is int else None
+        if not pref and type(x) is int and type(z) is int:
+            pref = self.world.feet_at(x, z)
+        spot = self._find_open_spot(pref)
+        if not spot:
+            raise ValueError("No walkable ground available")
+        self.entity_counter += 1
+        names = ENTITY_DEFAULT_NAMES[kind]
+        custom_name = str(value.get("name", "")).strip()[:24]
+        name = custom_name or names[(self.entity_counter - 1) % len(names)]
+        variant = self.entity_counter % 4
+        self.entities.append({
+            "id": f"ent-{self.entity_counter}",
+            "kind": kind,
+            "name": name,
+            "variant": variant,
+            "position": {"x": float(spot[0]), "y": float(spot[1]), "z": float(spot[2])},
+            "grid_pos": xyz(spot),
+            "yaw": round(self.rng.uniform(0, math.tau), 3),
+            "animation": "idle",
+            "target": None,
+            "wait": self.rng.uniform(0.6, 2.2),
+        })
+        self.remember(f"A {kind} named {name} appeared on the island.")
+
+    def update_entities(self, dt: float) -> None:
+        for ent in self.entities:
+            pos = ent["position"]
+            gx, gy, gz = ent["grid_pos"]["x"], ent["grid_pos"]["y"], ent["grid_pos"]["z"]
+            target = ent.get("target")
+            if target is None:
+                ent["wait"] = max(0.0, ent.get("wait", 0.0) - dt)
+                if ent["wait"] <= 0:
+                    neighbors = []
+                    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)):
+                        p = self.world.feet_at(gx + dx, gz + dz, gy)
+                        if p and abs(p[1] - gy) <= 1:
+                            if ent["kind"] == "duck" and self.world.get(p[0], p[1] - 1, p[2]) == WATER:
+                                neighbors.append(p)
+                            elif self.world.walkable(p):
+                                neighbors.append(p)
+                    if neighbors:
+                        ent["target"] = list(self.rng.choice(neighbors))
+                        ent["animation"] = "walking"
+                    else:
+                        ent["wait"] = 1.5
+                        ent["animation"] = "idle"
+                else:
+                    ent["animation"] = "grazing" if ent["kind"] in {"sheep", "deer"} and ent["wait"] > 1.0 else "sitting" if ent["kind"] == "cat" and ent["wait"] > 1.2 else "idle"
+                continue
+
+            tx, ty, tz = target
+            dx = tx - pos["x"]
+            dy = ty - pos["y"]
+            dz = tz - pos["z"]
+            dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            speed = 1.85 if ent["kind"] in {"fox", "deer"} else 1.55 if ent["kind"] in {"companion", "villager"} else 1.25
+            step_d = speed * dt
+            if dist > 0.01:
+                ent["yaw"] = round(math.atan2(dx, dz), 3)
+            if dist <= step_d:
+                pos["x"], pos["y"], pos["z"] = float(tx), float(ty), float(tz)
+                ent["grid_pos"] = {"x": int(tx), "y": int(ty), "z": int(tz)}
+                ent["target"] = None
+                ent["wait"] = self.rng.uniform(0.8, 3.2)
+                ent["animation"] = "idle"
+            else:
+                pos["x"] = round(pos["x"] + dx / dist * step_d, 4)
+                pos["y"] = round(pos["y"] + dy / dist * step_d, 4)
+                pos["z"] = round(pos["z"] + dz / dist * step_d, 4)
+                ent["animation"] = "walking"

@@ -183,6 +183,20 @@ export interface WorldStats {
   crops_ripe: number;
   blocks_placed: number;
   blocks_broken: number;
+  entities_count?: number;
+}
+
+export type EntityKind = 'companion' | 'villager' | 'cat' | 'fox' | 'sheep' | 'deer' | 'duck';
+
+export interface WorldEntity {
+  id: string;
+  kind: EntityKind | string;
+  name: string;
+  variant?: number;
+  position: Vec3;
+  grid_pos: Vec3;
+  yaw: number;
+  animation: string;
 }
 
 export interface LlmStatus {
@@ -207,6 +221,7 @@ export interface WorldStateSnapshot {
   seed: number;
   npc: NpcState;
   stats: WorldStats;
+  entities?: WorldEntity[];
   llm_status: LlmStatus;
 }
 
@@ -288,6 +303,20 @@ export interface LlmTestResponse {
   error: string | null;
 }
 
+export interface DetectedLocalModel {
+  provider: LlmProvider | string;
+  label: string;
+  base_url: string;
+  model: string;
+  status: 'running' | 'installed' | string;
+  size?: string | null;
+}
+
+export interface DetectLocalLlmResponse {
+  detected: DetectedLocalModel[];
+  checked_endpoints: string[];
+}
+
 export type CameraMode = 'orbit' | 'follow' | 'pov';
 
 export type ConnectionMode = 'connecting' | 'live' | 'reconnecting' | 'offline_demo';
@@ -303,4 +332,14 @@ export type InspectTarget =
     }
   | {
       kind: 'npc';
+    }
+  | {
+      kind: 'entity';
+      entity: WorldEntity;
     };
+
+export type GodTool =
+  | { mode: 'inspect' }
+  | { mode: 'erase' }
+  | { mode: 'object'; object: string; label: string }
+  | { mode: 'entity'; kind: EntityKind; label: string; customName?: string };

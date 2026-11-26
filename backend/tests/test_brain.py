@@ -74,9 +74,17 @@ def test_unconfigured_and_disabled_fallback_without_http():
 
 def test_model_discovery_and_provider_change_clears_secrets():
     async def handle(request):
-        return httpx.Response(200,json={'models':[{'name':'local-model'}]})
+        if request.url.path == '/api/tags':
+            return httpx.Response(200,json={'models':[{'name':'local-model','size':2*1024**3}]})
+        if request.url.path == '/v1/models':
+            return httpx.Response(200,json={'data':[{'id':'lmstudio-qwen'}]})
+        return httpx.Response(404)
     b = Brain(LLMConfig(provider='ollama',api_key='private'),transport=httpx.MockTransport(handle))
     assert asyncio.run(b.models())['models'] == ['local-model']
+    assert asyncio.run(b.models(provider='lmstudio',base_url='http://localhost:1234/v1'))['models'] == ['lmstudio-qwen']
+    detected = asyncio.run(b.detect_local())['detected']
+    assert any(d['provider']=='ollama' and d['model']=='local-model' and d['status']=='running' for d in detected)
+    assert any(d['provider']=='lmstudio' and d['model']=='lmstudio-qwen' for d in detected)
     b.configure({'provider':'openai'})
     assert not b.config.public()['has_api_key']
     assert b.config.base_url == 'https://api.openai.com/v1'

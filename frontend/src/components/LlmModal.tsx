@@ -7,13 +7,20 @@ import {
   ChevronUp,
   Cpu,
   KeyRound,
+  Radar,
   RefreshCw,
   Server,
   X,
   XCircle,
 } from 'lucide-react';
 import { backendApi } from '../services/api';
-import type { ConnectionMode, LlmConfig, LlmTestResponse, LlmTrace } from '../types/world';
+import type {
+  ConnectionMode,
+  DetectedLocalModel,
+  LlmConfig,
+  LlmTestResponse,
+  LlmTrace,
+} from '../types/world';
 
 interface LlmModalProps {
   open: boolean;
@@ -50,12 +57,29 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
     enabled: true,
   });
   const [models, setModels] = useState<string[]>([]);
+  const [detectedModels, setDetectedModels] = useState<DetectedLocalModel[]>([]);
+  const [scanningLocal, setScanningLocal] = useState(false);
+  const [scanChecked, setScanChecked] = useState(false);
   const [loadingModels, setLoadingModels] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<LlmTestResponse | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
+
+  const scanLocalModels = async () => {
+    setScanningLocal(true);
+    try {
+      const res = await backendApi.detectLocalLlms();
+      setDetectedModels(res.detected ?? []);
+      setScanChecked(true);
+    } catch {
+      setDetectedModels([]);
+      setScanChecked(true);
+    } finally {
+      setScanningLocal(false);
+    }
+  };
 
   useEffect(() => {
     if (!open || connectionMode !== 'live') return;
@@ -68,17 +92,14 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
           api_key: '',
         }));
       })
-      .catch(() => {
-        // Ignore if backend unavailable
-      });
+      .catch(() => {});
     backendApi
       .getLlmTraces(30)
       .then((list) => {
         if (list.length > 0) onTracesUpdated(list);
       })
-      .catch(() => {
-        // Ignore
-      });
+      .catch(() => {});
+    scanLocalModels();
   }, [open, connectionMode, onTracesUpdated]);
 
   if (!open) return null;
@@ -95,6 +116,29 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
     }));
     setModels([]);
     setTestResult(null);
+  };
+
+  const handleSelectDetected = async (item: DetectedLocalModel) => {
+    const nextPatch: Partial<LlmConfig> = {
+      provider: item.provider,
+      model: item.model,
+      base_url: item.base_url,
+      enabled: true,
+    };
+    setConfig((prev) => ({ ...prev, ...nextPatch, api_key: '' }));
+    setModels([item.model]);
+    setTestResult(null);
+    setSaving(true);
+    setStatusMsg(null);
+    try {
+      const saved = await backendApi.updateLlmConfig(nextPatch);
+      setConfig((prev) => ({ ...prev, ...saved, api_key: '' }));
+      setStatusMsg(`Active: ${item.model}`);
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : 'Failed to activate local model');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleFetchModels = async () => {
@@ -131,7 +175,7 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
       }
       const saved = await backendApi.updateLlmConfig(payload);
       setConfig((prev) => ({ ...prev, ...saved, api_key: '' }));
-      setStatusMsg('AI Brain configuration saved');
+      setStatusMsg('Saved');
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : 'Failed to save config');
     } finally {
@@ -167,125 +211,156 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-sm">
-      <div className="w-full max-w-2xl max-h-[88vh] flex flex-col rounded-2xl bg-slate-900 border border-slate-700/80 shadow-2xl overflow-hidden">
-        {/* Modal Header */}
-        <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <div className="w-full max-w-2xl max-h-[86vh] flex flex-col rounded-2xl bg-neutral-950 border border-white/15 shadow-2xl overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-white/10 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <Brain className="w-5 h-5 text-violet-400" />
+            <Brain className="w-4 h-4 text-neutral-300" />
             <div>
-              <h2 className="text-sm font-bold text-white">AI Brain Configuration & Trace Log</h2>
-              <p className="text-[11px] text-slate-400">
-                Connect a Local LLM (Ollama / LM Studio) or Cloud API Key
-              </p>
+              <h2 className="text-xs font-semibold text-white">AI Brain</h2>
+              <p className="text-[11px] text-neutral-400">Local LLM or API Key configuration</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
-          >
+          <button onClick={onClose} className="p-1.5 rounded-lg text-neutral-400 hover:text-white cursor-pointer">
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="px-5 pt-3 flex items-center gap-2 border-b border-slate-800 bg-slate-950/30">
+        <div className="px-5 pt-2.5 flex items-center gap-4 border-b border-white/10">
           <button
             onClick={() => setTab('config')}
-            className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition cursor-pointer ${
-              tab === 'config'
-                ? 'border-violet-400 text-white'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+            className={`pb-2.5 text-xs font-medium border-b-2 transition cursor-pointer ${
+              tab === 'config' ? 'border-white text-white' : 'border-transparent text-neutral-500 hover:text-neutral-200'
             }`}
           >
-            LLM Provider Settings
+            Settings
           </button>
           <button
             onClick={() => setTab('traces')}
-            className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
-              tab === 'traces'
-                ? 'border-violet-400 text-white'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+            className={`pb-2.5 text-xs font-medium border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+              tab === 'traces' ? 'border-white text-white' : 'border-transparent text-neutral-500 hover:text-neutral-200'
             }`}
           >
             <Activity className="w-3.5 h-3.5" />
-            Decision Trace Log ({traces.length})
+            Traces ({traces.length})
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto hud-scroll p-5 space-y-4">
-          {connectionMode !== 'live' && tab === 'config' && (
-            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200">
-              Currently in <strong>{connectionMode.replace('_', ' ')}</strong> mode. Start the backend
-              at <code className="font-mono">http://localhost:8000</code> to persist settings and run
-              live LLM decisions.
-            </div>
-          )}
-
           {tab === 'config' ? (
             <>
-              {/* Provider Picker */}
-              <div>
-                <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                  Select Provider
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {[
-                    { id: 'ollama', label: 'Ollama (Local)', icon: Server },
-                    { id: 'lmstudio', label: 'LM Studio', icon: Cpu },
-                    { id: 'openai', label: 'OpenAI Key', icon: KeyRound },
-                    { id: 'gemini', label: 'Gemini Key', icon: KeyRound },
-                    { id: 'openrouter', label: 'OpenRouter', icon: KeyRound },
-                    { id: 'custom', label: 'Custom URL', icon: Server },
-                    { id: 'fallback', label: 'Offline Fallback', icon: Cpu },
-                  ].map(({ id, label, icon: Icon }) => (
-                    <button
-                      key={id}
-                      onClick={() => handleProviderChange(id)}
-                      className={`flex items-center gap-1.5 px-2.5 py-2 rounded-xl border text-xs font-medium transition cursor-pointer ${
-                        config.provider === id
-                          ? 'bg-violet-600/25 border-violet-400 text-white'
-                          : 'bg-slate-950/70 border-slate-800 text-slate-300 hover:border-slate-700'
-                      }`}
-                    >
-                      <Icon className="w-3.5 h-3.5 shrink-0 text-violet-300" />
-                      <span className="truncate">{label}</span>
-                    </button>
-                  ))}
+              {/* Auto-Detected Local Models */}
+              <div className="p-3 rounded-xl bg-neutral-900/70 border border-white/10 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-200">
+                    <Radar className={`w-3.5 h-3.5 ${scanningLocal ? 'animate-spin' : ''}`} />
+                    <span>Detected on This Computer</span>
+                  </div>
+                  <button
+                    onClick={scanLocalModels}
+                    disabled={scanningLocal || connectionMode !== 'live'}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-[11px] text-neutral-200 disabled:opacity-40 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${scanningLocal ? 'animate-spin' : ''}`} />
+                    {scanningLocal ? 'Scanning...' : 'Scan PC'}
+                  </button>
                 </div>
+
+                {connectionMode !== 'live' ? (
+                  <div className="text-[11px] text-neutral-500">
+                    Start the backend on <code className="font-mono">:8000</code> to scan local models.
+                  </div>
+                ) : detectedModels.length > 0 ? (
+                  <div className="grid sm:grid-cols-2 gap-1.5 max-h-32 overflow-y-auto hud-scroll">
+                    {detectedModels.map((item) => {
+                      const active =
+                        config.provider === item.provider &&
+                        config.model === item.model &&
+                        config.base_url === item.base_url;
+                      return (
+                        <button
+                          key={`${item.provider}-${item.base_url}-${item.model}`}
+                          onClick={() => handleSelectDetected(item)}
+                          className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-left transition cursor-pointer ${
+                            active
+                              ? 'bg-white text-neutral-950 border-white font-medium'
+                              : 'bg-neutral-950/70 border-white/10 hover:border-white/25 text-neutral-200'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-mono truncate">{item.model}</div>
+                            <div className={`text-[10px] truncate ${active ? 'text-neutral-600' : 'text-neutral-500'}`}>
+                              {item.label}
+                              {item.size ? ` · ${item.size}` : ''}
+                            </div>
+                          </div>
+                          <span className="text-[10px] shrink-0">
+                            {active ? 'Active' : item.status === 'running' ? 'Use' : 'Installed'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : scanChecked ? (
+                  <div className="text-[11px] text-neutral-500">
+                    No running Ollama or LM Studio detected. Start one and click Scan PC.
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Provider Selector */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                {[
+                  { id: 'ollama', label: 'Ollama', icon: Server },
+                  { id: 'lmstudio', label: 'LM Studio', icon: Cpu },
+                  { id: 'openai', label: 'OpenAI', icon: KeyRound },
+                  { id: 'gemini', label: 'Gemini', icon: KeyRound },
+                  { id: 'openrouter', label: 'OpenRouter', icon: KeyRound },
+                  { id: 'custom', label: 'Custom', icon: Server },
+                  { id: 'fallback', label: 'Fallback', icon: Cpu },
+                ].map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    onClick={() => handleProviderChange(id)}
+                    className={`flex items-center gap-1.5 px-2.5 py-2 rounded-xl border text-xs transition cursor-pointer ${
+                      config.provider === id
+                        ? 'bg-white text-neutral-950 border-white font-medium'
+                        : 'bg-neutral-900/70 border-white/5 text-neutral-300 hover:border-white/20'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5 shrink-0" />
+                    <span>{label}</span>
+                  </button>
+                ))}
               </div>
 
               <div className="grid sm:grid-cols-2 gap-3">
-                {/* Base URL */}
                 <div>
-                  <label className="block text-[11px] text-slate-400 mb-1">Endpoint Base URL</label>
+                  <label className="block text-[11px] text-neutral-400 mb-1">Base URL</label>
                   <input
                     type="text"
                     value={config.base_url}
                     onChange={(e) => setConfig({ ...config, base_url: e.target.value })}
-                    placeholder="http://localhost:11434"
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100 focus:outline-none focus:border-violet-500"
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs font-mono text-white focus:outline-none focus:border-white/30"
                   />
                 </div>
-
-                {/* Model */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="text-[11px] text-slate-400">Model Name</label>
+                    <label className="text-[11px] text-neutral-400">Model</label>
                     <button
                       onClick={handleFetchModels}
                       disabled={loadingModels || connectionMode !== 'live'}
-                      className="inline-flex items-center gap-1 text-[11px] text-cyan-300 hover:text-cyan-200 disabled:opacity-40 cursor-pointer"
+                      className="inline-flex items-center gap-1 text-[11px] text-neutral-300 hover:text-white disabled:opacity-40 cursor-pointer"
                     >
                       <RefreshCw className={`w-3 h-3 ${loadingModels ? 'animate-spin' : ''}`} />
-                      Fetch Models
+                      Fetch
                     </button>
                   </div>
                   {models.length > 0 ? (
                     <select
                       value={config.model}
                       onChange={(e) => setConfig({ ...config, model: e.target.value })}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100"
+                      className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs font-mono text-white"
                     >
                       {models.map((m) => (
                         <option key={m} value={m}>
@@ -298,40 +373,33 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
                       type="text"
                       value={config.model}
                       onChange={(e) => setConfig({ ...config, model: e.target.value })}
-                      placeholder="llama3.2 / gpt-4o-mini"
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100 focus:outline-none focus:border-violet-500"
+                      className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs font-mono text-white focus:outline-none focus:border-white/30"
                     />
                   )}
                 </div>
               </div>
 
-              {/* API Key (shown prominently for cloud providers, optional for custom) */}
               {(!isLocal || config.provider === 'custom') && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="text-[11px] text-slate-400">API Key</label>
-                    {config.has_api_key && (
-                      <span className="text-[10px] text-emerald-300">
-                        Key saved on server (leave blank to keep existing)
-                      </span>
-                    )}
+                    <label className="text-[11px] text-neutral-400">API Key</label>
+                    {config.has_api_key && <span className="text-[10px] text-neutral-400">Saved on server</span>}
                   </div>
                   <input
                     type="password"
                     value={config.api_key ?? ''}
                     onChange={(e) => setConfig({ ...config, api_key: e.target.value })}
-                    placeholder={config.has_api_key ? '••••••••••••••••••••' : 'sk-... or AIza...'}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100 focus:outline-none focus:border-violet-500"
+                    placeholder={config.has_api_key ? '••••••••••••' : 'sk-...'}
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs font-mono text-white focus:outline-none focus:border-white/30"
                   />
                 </div>
               )}
 
-              {/* Tuning Parameters */}
-              <div className="grid sm:grid-cols-3 gap-3 items-center p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+              <div className="grid sm:grid-cols-3 gap-3 items-center p-3 rounded-xl bg-neutral-900/60 border border-white/5">
                 <div>
-                  <label className="flex justify-between text-[11px] text-slate-400 mb-1">
+                  <label className="flex justify-between text-[11px] text-neutral-400 mb-1">
                     <span>Temperature</span>
-                    <span className="font-mono text-slate-200">{config.temperature}</span>
+                    <span className="font-mono text-neutral-200">{config.temperature}</span>
                   </label>
                   <input
                     type="range"
@@ -340,12 +408,12 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
                     step={0.1}
                     value={config.temperature}
                     onChange={(e) => setConfig({ ...config, temperature: Number(e.target.value) })}
-                    className="w-full accent-violet-500"
+                    className="w-full accent-white"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] text-slate-400 mb-1">Think Every (Ticks)</label>
+                  <label className="block text-[11px] text-neutral-400 mb-1">Interval (Ticks)</label>
                   <input
                     type="number"
                     min={5}
@@ -357,135 +425,96 @@ export function LlmModal({ open, connectionMode, traces, onClose, onTracesUpdate
                         decision_interval_ticks: Math.max(5, Number(e.target.value) || 25),
                       })
                     }
-                    className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-slate-100"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-neutral-950 border border-white/10 text-xs font-mono text-white"
                   />
                 </div>
 
-                <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer pt-3 sm:pt-0">
+                <label className="flex items-center gap-2 text-xs text-neutral-200 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={config.enabled}
                     onChange={(e) => setConfig({ ...config, enabled: e.target.checked })}
-                    className="rounded accent-violet-500 w-4 h-4"
+                    className="accent-white w-4 h-4"
                   />
-                  <span>LLM Brain Active</span>
+                  <span>Active</span>
                 </label>
               </div>
 
-              {/* Actions & Test Feedback */}
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                <div className="text-xs text-slate-300">{statusMsg}</div>
+              <div className="flex items-center justify-between pt-1">
+                <div className="text-xs text-neutral-400">{statusMsg}</div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={handleTest}
                     disabled={testing || connectionMode !== 'live'}
-                    className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-xs font-semibold text-slate-100 cursor-pointer transition"
+                    className="px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 disabled:opacity-40 text-xs text-neutral-200 cursor-pointer"
                   >
-                    {testing ? 'Testing...' : 'Test Connection'}
+                    {testing ? 'Testing...' : 'Test'}
                   </button>
                   <button
                     onClick={handleSave}
                     disabled={saving || connectionMode !== 'live'}
-                    className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-xs font-semibold text-white cursor-pointer transition"
+                    className="px-4 py-2 rounded-xl bg-white hover:bg-neutral-200 disabled:opacity-40 text-xs font-semibold text-neutral-950 cursor-pointer"
                   >
-                    {saving ? 'Saving...' : 'Save Settings'}
+                    {saving ? 'Saving...' : 'Save'}
                   </button>
                 </div>
               </div>
 
               {testResult && (
-                <div
-                  className={`p-3 rounded-xl border text-xs ${
-                    testResult.ok
-                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
-                      : 'bg-rose-500/10 border-rose-500/30 text-rose-200'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 font-semibold mb-1">
-                    {testResult.ok ? (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    ) : (
-                      <XCircle className="w-4 h-4 text-rose-400" />
-                    )}
-                    <span>
-                      {testResult.ok
-                        ? `Connected (${testResult.latency_ms} ms)`
-                        : `Connection Failed (${testResult.latency_ms} ms)`}
-                    </span>
+                <div className="p-3 rounded-xl bg-neutral-900 border border-white/10 text-xs text-neutral-200">
+                  <div className="flex items-center gap-2 font-medium mb-1">
+                    {testResult.ok ? <CheckCircle2 className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+                    <span>{testResult.ok ? `Connected (${testResult.latency_ms} ms)` : 'Failed'}</span>
                   </div>
-                  <div className="font-mono text-[11px] opacity-90 break-words">
+                  <div className="font-mono text-[11px] text-neutral-400 break-words">
                     {testResult.error || testResult.reply}
                   </div>
                 </div>
               )}
             </>
           ) : (
-            <div className="space-y-2.5">
+            <div className="space-y-2">
               {traces.length === 0 ? (
-                <div className="text-center py-8 text-xs text-slate-500">
-                  No LLM decision traces recorded yet.
-                </div>
+                <div className="text-center py-8 text-xs text-neutral-500">No traces yet.</div>
               ) : (
                 traces.map((tr) => {
                   const isOpen = expandedTraceId === tr.id;
                   return (
-                    <div
-                      key={tr.id}
-                      className="rounded-xl bg-slate-950/80 border border-slate-800 overflow-hidden"
-                    >
+                    <div key={tr.id} className="rounded-xl bg-neutral-900/70 border border-white/5 overflow-hidden">
                       <button
                         onClick={() => setExpandedTraceId(isOpen ? null : tr.id)}
-                        className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-slate-900/70 cursor-pointer"
+                        className="w-full px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-white/5 cursor-pointer"
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap text-[11px]">
-                            <span className="font-mono text-cyan-300">
+                          <div className="flex items-center gap-2 text-[11px] font-mono text-neutral-400">
+                            <span className="text-neutral-200">
                               {tr.provider}/{tr.model}
                             </span>
-                            <span className="text-slate-500 font-mono">{tr.latency_ms}ms</span>
-                            {tr.used_fallback && (
-                              <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px]">
-                                fallback
-                              </span>
-                            )}
-                            {tr.error && (
-                              <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 text-[10px]">
-                                error
-                              </span>
-                            )}
+                            <span>{tr.latency_ms}ms</span>
+                            {tr.used_fallback && <span>fallback</span>}
                           </div>
-                          <div className="text-xs text-slate-300 truncate mt-0.5">
+                          <div className="text-xs text-neutral-300 truncate mt-0.5">
                             {tr.parsed_decision?.action
                               ? `${tr.parsed_decision.action} — ${tr.parsed_decision.thought ?? tr.prompt_summary}`
                               : tr.prompt_summary}
                           </div>
                         </div>
                         {isOpen ? (
-                          <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" />
+                          <ChevronUp className="w-4 h-4 text-neutral-400 shrink-0" />
                         ) : (
-                          <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+                          <ChevronDown className="w-4 h-4 text-neutral-400 shrink-0" />
                         )}
                       </button>
 
                       {isOpen && (
-                        <div className="px-3 pb-3 pt-1 border-t border-slate-800/80 space-y-2 text-[11px]">
-                          {tr.error && (
-                            <div className="p-2 rounded bg-rose-500/10 text-rose-300 font-mono">
-                              Error: {tr.error}
-                            </div>
-                          )}
-                          <div>
-                            <div className="text-slate-400 font-semibold mb-0.5">Prompt Context</div>
-                            <pre className="p-2 rounded bg-slate-900 text-slate-300 font-mono whitespace-pre-wrap max-h-32 overflow-y-auto">
-                              {tr.raw_prompt}
-                            </pre>
-                          </div>
-                          <div>
-                            <div className="text-slate-400 font-semibold mb-0.5">Model Output</div>
-                            <pre className="p-2 rounded bg-slate-900 text-emerald-300 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
-                              {tr.raw_response}
-                            </pre>
-                          </div>
+                        <div className="px-3 pb-3 pt-1 border-t border-white/5 space-y-2 text-[11px]">
+                          {tr.error && <div className="text-neutral-300 font-mono">Error: {tr.error}</div>}
+                          <pre className="p-2 rounded bg-neutral-950 text-neutral-400 font-mono whitespace-pre-wrap max-h-32 overflow-y-auto">
+                            {tr.raw_prompt}
+                          </pre>
+                          <pre className="p-2 rounded bg-neutral-950 text-neutral-200 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
+                            {tr.raw_response}
+                          </pre>
                         </div>
                       )}
                     </div>

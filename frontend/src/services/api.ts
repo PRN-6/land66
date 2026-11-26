@@ -1,4 +1,5 @@
 import type {
+  DetectLocalLlmResponse,
   LlmConfig,
   LlmTestResponse,
   LlmTrace,
@@ -25,9 +26,12 @@ export function getWsBaseUrl(): string {
   return `${apiUrl.replace(/^http:\/\//, 'ws://')}/ws`;
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = 10000): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 8000);
+  const timeout = window.setTimeout(
+    () => controller.abort(new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`)),
+    timeoutMs,
+  );
   try {
     const res = await fetch(`${getApiBaseUrl()}${path}`, {
       ...init,
@@ -42,6 +46,11 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
       throw new Error(`HTTP ${res.status}: ${text || res.statusText}`);
     }
     return (await res.json()) as T;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
   } finally {
     window.clearTimeout(timeout);
   }
@@ -68,7 +77,17 @@ export const backendApi = {
   },
 
   godIntervene(payload: {
-    action: 'set_time' | 'set_weather' | 'whisper' | 'spawn_tree' | 'drop_gift' | 'heal_npc';
+    action:
+      | 'set_time'
+      | 'set_weather'
+      | 'whisper'
+      | 'spawn_tree'
+      | 'drop_gift'
+      | 'heal_npc'
+      | 'spawn_object'
+      | 'remove_block'
+      | 'spawn_entity'
+      | 'clear_entities';
     value?: unknown;
   }): Promise<{ ok?: boolean; message?: string; state?: WorldStateSnapshot }> {
     return requestJson('/api/god/intervene', {
@@ -103,10 +122,18 @@ export const backendApi = {
   },
 
   testLlmConnection(override?: Partial<LlmConfig>): Promise<LlmTestResponse> {
-    return requestJson('/api/llm/test', {
-      method: 'POST',
-      body: JSON.stringify(override ?? {}),
-    });
+    return requestJson(
+      '/api/llm/test',
+      {
+        method: 'POST',
+        body: JSON.stringify(override ?? {}),
+      },
+      60000,
+    );
+  },
+
+  detectLocalLlms(): Promise<DetectLocalLlmResponse> {
+    return requestJson('/api/llm/detect');
   },
 
   getLlmTraces(limit = 30): Promise<LlmTrace[]> {

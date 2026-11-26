@@ -1,4 +1,4 @@
-import { Box, User, X } from 'lucide-react';
+import { Box, User, Users, X } from 'lucide-react';
 import { BLOCK_LABELS, BlockId, type InspectTarget, type WorldStateSnapshot } from '../types/world';
 
 interface InspectToastProps {
@@ -11,60 +11,70 @@ export function InspectToast({ target, state, onClose }: InspectToastProps) {
   if (!target) return null;
 
   return (
-    <div className="pointer-events-auto fixed bottom-4 left-1/2 -translate-x-1/2 z-30 w-80 max-w-[calc(100vw-2rem)] p-3 rounded-2xl bg-slate-950/85 backdrop-blur-xl border border-slate-700/80 shadow-2xl">
+    <div className="pointer-events-auto fixed bottom-16 left-1/2 -translate-x-1/2 z-30 w-72 max-w-[calc(100vw-2rem)] p-3 rounded-2xl bg-neutral-950/88 backdrop-blur-xl border border-white/10 shadow-2xl">
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2">
-          <div className="p-2 rounded-xl bg-cyan-500/15 border border-cyan-500/30 text-cyan-300">
-            {target.kind === 'npc' ? <User className="w-4 h-4" /> : <Box className="w-4 h-4" />}
+          <div className="p-1.5 rounded-lg bg-white/10 text-neutral-200">
+            {target.kind === 'npc' ? (
+              <User className="w-4 h-4" />
+            ) : target.kind === 'entity' ? (
+              <Users className="w-4 h-4" />
+            ) : (
+              <Box className="w-4 h-4" />
+            )}
           </div>
           <div>
             {target.kind === 'npc' ? (
               <>
-                <div className="text-xs font-bold text-white">{state.npc.name} (AI Resident)</div>
-                <div className="text-[11px] text-slate-400 font-mono">
-                  Action: {state.npc.current_action}
+                <div className="text-xs font-semibold text-white">{state.npc.name}</div>
+                <div className="text-[11px] text-neutral-400 font-mono">{state.npc.current_action}</div>
+              </>
+            ) : target.kind === 'entity' ? (
+              <>
+                <div className="text-xs font-semibold text-white">
+                  {target.entity.name}{' '}
+                  <span className="text-neutral-400 font-normal capitalize">({target.entity.kind})</span>
+                </div>
+                <div className="text-[11px] text-neutral-400 font-mono">
+                  ({target.entity.grid_pos.x}, {target.entity.grid_pos.y}, {target.entity.grid_pos.z}) ·{' '}
+                  {target.entity.animation}
                 </div>
               </>
             ) : (
               <>
-                <div className="text-xs font-bold text-white">
+                <div className="text-xs font-semibold text-white">
                   {BLOCK_LABELS[target.block] ?? `Block #${target.block}`}
                 </div>
-                <div className="text-[11px] text-slate-400 font-mono">
-                  Coords ({target.x}, {target.y}, {target.z}) · ID {target.block}
+                <div className="text-[11px] text-neutral-400 font-mono">
+                  ({target.x}, {target.y}, {target.z})
                 </div>
               </>
             )}
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
-        >
+        <button onClick={onClose} className="p-1 rounded-lg text-neutral-500 hover:text-white cursor-pointer">
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
 
       {target.kind === 'block' && target.block === BlockId.CROP_WHEAT && (
-        <div className="mt-2 pt-2 border-t border-slate-800 text-[11px] text-emerald-300 flex justify-between">
-          <span>Growth Stage:</span>
-          <span className="font-mono font-semibold">
-            {target.meta + 1} / 4 {target.meta >= 3 ? '(Ripe!)' : '(Growing)'}
+        <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-neutral-300 flex justify-between">
+          <span>Growth</span>
+          <span className="font-mono">
+            {target.meta + 1}/4 {target.meta >= 3 ? '(Ripe)' : ''}
           </span>
         </div>
       )}
 
       {target.kind === 'block' && target.block === BlockId.FARMLAND && (
-        <div className="mt-2 pt-2 border-t border-slate-800 text-[11px] text-sky-300 flex justify-between">
-          <span>Soil Moisture:</span>
-          <span className="font-mono font-semibold">
-            {target.meta > 0 ? 'Watered (Moist)' : 'Dry Soil'}
-          </span>
+        <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-neutral-300 flex justify-between">
+          <span>Soil</span>
+          <span className="font-mono">{target.meta > 0 ? 'Watered' : 'Dry'}</span>
         </div>
       )}
 
       {target.kind === 'npc' && (
-        <div className="mt-2 pt-2 border-t border-slate-800 text-[11px] text-slate-300 italic line-clamp-2">
+        <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-neutral-300 line-clamp-2">
           “{state.npc.thought}”
         </div>
       )}

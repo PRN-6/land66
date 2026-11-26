@@ -10,12 +10,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from .brain import Brain
-from .models import ConfigPatch, Control, Intervention, Decision
+from .models import ConfigPatch, Control, Intervention, Decision, Provider
 from .simulation import Simulation
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -25,7 +25,7 @@ logger = logging.getLogger("land66")
 class Runtime:
     def __init__(self, seed=66, brain: Brain | None = None):
         self.sim = Simulation(seed)
-        self.brain = brain or Brain(timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "12")))
+        self.brain = brain or Brain(timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "45")))
         self.clients: set[asyncio.Queue] = set()
         self.thinking_task: asyncio.Task | None = None
         self.loop_task: asyncio.Task | None = None
@@ -171,12 +171,19 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         return rt.brain.config.public()
 
     @app.post("/api/llm/test")
-    async def test_llm():
-        return await runtime().brain.test()
+    async def test_llm(patch: ConfigPatch | None = Body(default=None)):
+        return await runtime().brain.test(patch.model_dump(exclude_none=True) if patch else None)
 
     @app.get("/api/llm/models")
-    async def models():
-        return await runtime().brain.models()
+    async def models(provider: Provider | None = Query(default=None), base_url: str | None = Query(default=None)):
+        try:
+            return await runtime().brain.models(provider=provider, base_url=base_url)
+        except (ValueError, ValidationError):
+            raise HTTPException(422, "Invalid provider or base_url")
+
+    @app.get("/api/llm/detect")
+    async def detect_local_llms():
+        return await runtime().brain.detect_local()
 
     @app.get("/api/llm/traces")
     async def traces(limit: int = Query(default=30, ge=1, le=100)):

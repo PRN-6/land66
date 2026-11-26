@@ -48,7 +48,10 @@ def test_configuration_secret_masking_models_and_traces():
         assert client.post('/api/llm/config',json={'base_url':'file:///etc/passwd'}).status_code == 422
         client.post('/api/llm/config',json={'provider':'fallback'})
         assert client.post('/api/llm/test').json()['ok']
+        assert client.post('/api/llm/test',json={'provider':'openai','model':'gpt-4o-mini'}).json()['ok'] is False
         assert client.get('/api/llm/models').json()['models'] == []
+        assert client.get('/api/llm/models?provider=openai').json()['models'] == ['gpt-4o-mini','gpt-4o']
+        assert isinstance(client.get('/api/llm/detect').json()['detected'],list)
         traces = client.get('/api/llm/traces?limit=30')
         assert traces.status_code == 200 and isinstance(traces.json(),list)
         assert client.get('/api/llm/traces?limit=1000').status_code == 422
@@ -62,6 +65,14 @@ def test_god_endpoints_and_invalid_values():
         state = client.get('/api/state').json()
         assert state['clock_str'] == '06:00' and state['weather'] == 'rain'
         assert state['npc']['inventory']['bread'] == 3
+        assert client.post('/api/god/intervene',json={'action':'spawn_object','value':{'object':'torch'}}).status_code == 200
+        assert client.post('/api/god/intervene',json={'action':'spawn_entity','value':{'kind':'cat','name':'Mochi'}}).status_code == 200
+        assert client.post('/api/god/intervene',json={'action':'spawn_entity','value':{'kind':'companion','name':'Maya'}}).status_code == 200
+        state2 = client.get('/api/state').json()
+        assert len(state2['entities']) == 2
+        assert state2['entities'][0]['name'] == 'Mochi'
+        assert client.post('/api/god/intervene',json={'action':'clear_entities'}).status_code == 200
+        assert client.get('/api/state').json()['entities'] == []
         assert client.post('/api/god/intervene',json={'action':'drop_gift','value':{'stone':-1}}).status_code == 422
         assert client.post('/api/god/intervene',json={'action':'set_time','value':'noon'}).status_code == 422
 

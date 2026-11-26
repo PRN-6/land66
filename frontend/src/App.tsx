@@ -6,14 +6,15 @@ import { WorldWsClient } from './services/wsClient';
 import type {
   CameraMode,
   ConnectionMode,
+  GodTool,
   InspectTarget,
   LlmTrace,
   SimSpeed,
   WorldStateSnapshot,
 } from './types/world';
 import { TopBar } from './components/TopBar';
-import { LeftDrawer } from './components/LeftDrawer';
-import { RightDrawer } from './components/RightDrawer';
+import { GodDock } from './components/GodDock';
+import { InspectorDrawer } from './components/InspectorDrawer';
 import { LlmModal } from './components/LlmModal';
 import { InspectToast } from './components/InspectToast';
 import { NpcThoughtOverlay } from './components/NpcThoughtOverlay';
@@ -36,9 +37,11 @@ export function App() {
   const [traces, setTraces] = useState<LlmTrace[]>([]);
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit');
   const [showThoughtBubble, setShowThoughtBubble] = useState(true);
-  const [showPath, setShowPath] = useState(true);
-  const [panelsOpen, setPanelsOpen] = useState(true);
+  const [showPath, setShowPath] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [llmModalOpen, setLlmModalOpen] = useState(false);
+  const [activeTool, setActiveTool] = useState<GodTool>({ mode: 'inspect' });
+  const activeToolRef = useRef<GodTool>({ mode: 'inspect' });
   const [inspectTarget, setInspectTarget] = useState<InspectTarget | null>(null);
   const [npcScreenPos, setNpcScreenPos] = useState({ x: 0, y: 0, visible: false });
   const [bannerError, setBannerError] = useState<string | null>(null);
@@ -47,21 +50,92 @@ export function App() {
     setBannerError(msg);
     window.setTimeout(() => {
       setBannerError((prev) => (prev === msg ? null : prev));
-    }, 4500);
+    }, 4000);
   }, []);
 
-  // Initialize Three.js floating island scene
+  const handleSelectTool = useCallback((tool: GodTool) => {
+    activeToolRef.current = tool;
+    setActiveTool(tool);
+    sceneRef.current?.setGodTool(tool);
+    if (tool.mode !== 'inspect') {
+      setInspectTarget(null);
+    }
+  }, []);
+
+  const handleGodIntervene = useCallback(
+    async (
+      action:
+        | 'set_time'
+        | 'set_weather'
+        | 'whisper'
+        | 'spawn_tree'
+        | 'drop_gift'
+        | 'heal_npc'
+        | 'spawn_object'
+        | 'remove_block'
+        | 'spawn_entity'
+        | 'clear_entities',
+      value?: unknown,
+    ) => {
+      if (connectionModeRef.current === 'live') {
+        try {
+          await backendApi.godIntervene({ action, value });
+        } catch (err) {
+          notifyError(err instanceof Error ? err.message : 'Action failed');
+        }
+      } else {
+        const updates = demoSim.handleGodIntervene(action, value);
+        const next = demoSim.getState();
+        sceneRef.current?.applyTickUpdate(updates, next);
+        setWorldState(next);
+      }
+    },
+    [notifyError],
+  );
+
+  // Escape key returns to Inspect cursor
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && activeToolRef.current.mode !== 'inspect') {
+        handleSelectTool({ mode: 'inspect' });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [handleSelectTool]);
+
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
 
     const scene = new VoxelWorldScene(el, {
       onSelectTarget: (t) => setInspectTarget(t),
+      onPlaceAt: (placeCoord, hitCoord) => {
+        const tool = activeToolRef.current;
+        if (tool.mode === 'erase') {
+          void handleGodIntervene('remove_block', hitCoord);
+        } else if (tool.mode === 'object') {
+          void handleGodIntervene('spawn_object', {
+            object: tool.object,
+            x: placeCoord.x,
+            y: placeCoord.y,
+            z: placeCoord.z,
+          });
+        } else if (tool.mode === 'entity') {
+          void handleGodIntervene('spawn_entity', {
+            kind: tool.kind,
+            name: tool.customName,
+            x: placeCoord.x,
+            y: placeCoord.y,
+            z: placeCoord.z,
+          });
+        }
+      },
       onNpcScreenPos: (pos) => setNpcScreenPos(pos),
     });
+    scene.setShowPath(false);
     sceneRef.current = scene;
 
-    // Seed initial visual immediately while live WebSocket connects
     const init = demoSim.getInitMessage();
     scene.applyWorldInit(init);
     setWorldState(init.state);
@@ -70,23 +144,18 @@ export function App() {
       scene.dispose();
       sceneRef.current = null;
     };
-  }, []);
+  }, [handleGodIntervene]);
 
-  // Connect live WebSocket with fallback to Offline Demo if backend isn't running
   useEffect(() => {
     const client = new WorldWsClient({
-      onOpen: () => {
-        setConnMode('live');
-      },
+      onOpen: () => setConnMode('live'),
       onMessage: (msg) => {
         if (msg.type === 'world_init') {
           setConnMode('live');
           sceneRef.current?.applyWorldInit(msg);
           setWorldState(msg.state);
         } else if (msg.type === 'tick_update') {
-          if (connectionModeRef.current !== 'live') {
-            setConnMode('live');
-          }
+          if (connectionModeRef.current !== 'live') setConnMode('live');
           sceneRef.current?.applyTickUpdate(msg.block_updates, msg.state);
           setWorldState(msg.state);
         } else if (msg.type === 'llm_trace') {
@@ -95,17 +164,12 @@ export function App() {
       },
       onDisconnect: (attempt) => {
         if (connectionModeRef.current === 'offline_demo') return;
-        if (attempt >= 2) {
-          setConnMode('offline_demo');
-        } else {
-          setConnMode('reconnecting');
-        }
+        setConnMode(attempt >= 2 ? 'offline_demo' : 'reconnecting');
       },
     });
     wsClientRef.current = client;
     client.connect();
 
-    // If backend isn't running on initial mount, switch smoothly to Offline Demo after 1.5s
     const fallbackTimer = window.setTimeout(() => {
       if (connectionModeRef.current === 'connecting') {
         setConnMode('offline_demo');
@@ -119,7 +183,6 @@ export function App() {
     };
   }, [setConnMode]);
 
-  // Run Offline Demo tick loop only while in offline_demo mode
   useEffect(() => {
     if (connectionMode !== 'offline_demo') return;
     const interval = window.setInterval(() => {
@@ -139,7 +202,7 @@ export function App() {
         try {
           await backendApi.simControl({ action, speed, seed });
         } catch (err) {
-          notifyError(err instanceof Error ? err.message : 'Simulation control failed');
+          notifyError(err instanceof Error ? err.message : 'Control failed');
         }
       } else {
         const resetInit = demoSim.handleControl(action, speed, seed);
@@ -156,35 +219,9 @@ export function App() {
     [notifyError],
   );
 
-  const handleGodIntervene = useCallback(
-    async (
-      action: 'set_time' | 'set_weather' | 'whisper' | 'spawn_tree' | 'drop_gift' | 'heal_npc',
-      value?: unknown,
-    ) => {
-      if (connectionModeRef.current === 'live') {
-        try {
-          await backendApi.godIntervene({ action, value });
-        } catch (err) {
-          notifyError(err instanceof Error ? err.message : 'God intervention failed');
-        }
-      } else {
-        const updates = demoSim.handleGodIntervene(action, value);
-        const next = demoSim.getState();
-        sceneRef.current?.applyTickUpdate(updates, next);
-        setWorldState(next);
-      }
-    },
-    [notifyError],
-  );
-
   const handleCameraMode = useCallback((mode: CameraMode) => {
     setCameraMode(mode);
     sceneRef.current?.setCameraMode(mode);
-  }, []);
-
-  const handleFocusPreset = useCallback((preset: 'overview' | 'npc') => {
-    setCameraMode(preset === 'overview' ? 'orbit' : 'follow');
-    sceneRef.current?.focusPreset(preset);
   }, []);
 
   const handleTogglePath = useCallback(() => {
@@ -205,18 +242,15 @@ export function App() {
   }, [setConnMode]);
 
   return (
-    <div className="relative w-full h-full overflow-hidden bg-slate-950">
-      {/* Full-bleed 3D Voxel Canvas */}
+    <div className="relative w-full h-full overflow-hidden bg-neutral-950">
       <div ref={viewportRef} className="absolute inset-0 w-full h-full" />
 
-      {/* 3D Projected NPC Thought Bubble */}
       <NpcThoughtOverlay
         pos={npcScreenPos}
         state={worldState}
         enabled={showThoughtBubble && cameraMode !== 'pov'}
       />
 
-      {/* HUD Chrome */}
       <div className="pointer-events-none relative z-20 flex flex-col w-full h-full">
         <TopBar
           state={worldState}
@@ -224,38 +258,38 @@ export function App() {
           cameraMode={cameraMode}
           showThoughtBubble={showThoughtBubble}
           showPath={showPath}
-          panelsOpen={panelsOpen}
+          inspectorOpen={inspectorOpen}
           onControl={handleControl}
           onCameraMode={handleCameraMode}
-          onFocusPreset={handleFocusPreset}
           onToggleThoughtBubble={() => setShowThoughtBubble((v) => !v)}
           onTogglePath={handleTogglePath}
-          onTogglePanels={() => setPanelsOpen((v) => !v)}
+          onToggleInspector={() => setInspectorOpen((v) => !v)}
           onOpenLlmModal={() => setLlmModalOpen(true)}
           onToggleOfflineDemo={handleToggleOfflineDemo}
         />
 
         {bannerError && (
-          <div className="pointer-events-auto mx-auto mt-2 px-3 py-1.5 rounded-xl bg-rose-950/90 border border-rose-500/40 text-xs text-rose-200 shadow-lg">
+          <div className="pointer-events-auto mx-auto mt-2 px-3 py-1 rounded-full bg-neutral-950/90 border border-white/15 text-[11px] text-neutral-200 shadow-lg">
             {bannerError}
           </div>
         )}
-
-        <div className="flex-1 min-h-0 flex justify-between items-stretch p-3 gap-3">
-          <LeftDrawer state={worldState} open={panelsOpen} />
-          <div className="flex-1" />
-          <RightDrawer state={worldState} open={panelsOpen} onGodIntervene={handleGodIntervene} />
-        </div>
       </div>
 
-      {/* Click-to-Inspect Toast */}
+      <InspectorDrawer state={worldState} open={inspectorOpen} />
+
+      <GodDock
+        state={worldState}
+        activeTool={activeTool}
+        onSelectTool={handleSelectTool}
+        onGodIntervene={handleGodIntervene}
+      />
+
       <InspectToast
         target={inspectTarget}
         state={worldState}
         onClose={() => setInspectTarget(null)}
       />
 
-      {/* LLM Config & Trace Inspector Modal */}
       <LlmModal
         open={llmModalOpen}
         connectionMode={connectionMode}

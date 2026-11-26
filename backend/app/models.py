@@ -80,5 +80,16 @@ class Control(BaseModel):
 
 class Intervention(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    action: Literal["set_time", "set_weather", "whisper", "spawn_tree", "drop_gift", "heal_npc"]
+    action: Literal[
+        "set_time",
+        "set_weather",
+        "whisper",
+        "spawn_tree",
+        "drop_gift",
+        "heal_npc",
+        "spawn_object",
+        "remove_block",
+        "spawn_entity",
+        "clear_entities",
+    ]
     value: Any = None

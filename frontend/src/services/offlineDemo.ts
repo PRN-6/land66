@@ -7,9 +7,11 @@ import {
   blockIndex,
   type BlockUpdate,
   type DayPhase,
+  type EntityKind,
   type LlmTrace,
   type SimSpeed,
   type WeatherType,
+  type WorldEntity,
   type WorldInitMessage,
   type WorldStateSnapshot,
 } from '../types/world';
@@ -59,10 +61,53 @@ function phaseFromTime(t: number): DayPhase {
 }
 
 function formatClock(t: number): string {
-  const totalMinutes = Math.floor(((t % 1) + 1) % 1 * 24 * 60);
+  const totalMinutes = Math.floor((((t % 1) + 1) % 1) * 24 * 60);
   const h = Math.floor(totalMinutes / 60);
   const m = totalMinutes % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+const OBJECT_NAME_MAP: Record<string, number> = {
+  grass: BlockId.GRASS,
+  dirt: BlockId.DIRT,
+  stone: BlockId.STONE,
+  water: BlockId.WATER,
+  wood_log: BlockId.WOOD_LOG,
+  leaves: BlockId.LEAVES,
+  wood_plank: BlockId.WOOD_PLANK,
+  cobblestone: BlockId.COBBLESTONE,
+  glass: BlockId.GLASS,
+  door_closed: BlockId.DOOR_CLOSED,
+  door: BlockId.DOOR_CLOSED,
+  bed: BlockId.BED,
+  chest: BlockId.CHEST,
+  crafting_bench: BlockId.CRAFTING_BENCH,
+  torch: BlockId.TORCH,
+  lantern: BlockId.TORCH,
+  farmland: BlockId.FARMLAND,
+  crop_wheat: BlockId.CROP_WHEAT,
+  wheat: BlockId.CROP_WHEAT,
+  wild_berry: BlockId.WILD_BERRY,
+  berry: BlockId.WILD_BERRY,
+  sapling: BlockId.SAPLING,
+  roof_shingle: BlockId.ROOF_SHINGLE,
+  roof: BlockId.ROOF_SHINGLE,
+  fence: BlockId.FENCE,
+};
+
+const DEFAULT_NAMES: Record<string, string[]> = {
+  companion: ['Elena', 'Rowan', 'Maya', 'Soren'],
+  villager: ['Clara', 'Leo', 'Nora', 'Finn'],
+  cat: ['Mochi', 'Yuzu', 'Biscuit', 'Luna'],
+  fox: ['Rusty', 'Maple', 'Ember', 'Pip'],
+  sheep: ['Cloud', 'Bramble', 'Puff', 'Cotton'],
+  deer: ['Willow', 'Fern', 'Bambi', 'Aspen'],
+  duck: ['Puddle', 'Quack', 'Sunny', 'Pippin'],
+};
+
+interface DemoEntity extends WorldEntity {
+  target: [number, number, number] | null;
+  wait: number;
 }
 
 export class OfflineDemoSimulator {
@@ -74,9 +119,10 @@ export class OfflineDemoSimulator {
   private waypoints: Array<{ x: number; z: number; action: string; goal: string; thought: string }> = [];
   private waypointIdx = 0;
   private actionTimer = 0;
-  private phaseStage: 'explore' | 'gather' | 'clear' | 'build' | 'farm' = 'explore';
   private buildQueue: Array<{ x: number; y: number; z: number; block: number; meta?: number }> = [];
   private farmQueue: Array<{ x: number; y: number; z: number }> = [];
+  private demoEntities: DemoEntity[] = [];
+  private entityCounter = 0;
   private traceCounter = 0;
 
   constructor(seed = 6601) {
@@ -128,11 +174,11 @@ export class OfflineDemoSimulator {
           location_label: 'Dense Forest Clearing',
           sheltered: false,
           visible_summary:
-            'Tall oaks surround me. A small freshwater pond glimmers to the south-east and wild berries grow nearby.',
+            'Tall trees surround me. A freshwater pond glimmers nearby and wild berries grow along the clearing.',
           nearby_entities: [],
         },
         memories: [
-          { day: 1, clock: '06:28', text: 'Awakened on a floating woodland island surrounded by endless clouds.' },
+          { day: 1, clock: '06:28', text: 'Awakened on a floating woodland island surrounded by clouds.' },
         ],
         journal: [
           { day: 1, clock: '06:30', text: 'Day 1: Everything is untamed forest. First priority is water, wood, and a home.' },
@@ -148,7 +194,9 @@ export class OfflineDemoSimulator {
         crops_ripe: 0,
         blocks_placed: 0,
         blocks_broken: 0,
+        entities_count: 0,
       },
+      entities: [],
       llm_status: {
         provider: 'fallback',
         model: 'offline-demo-sim',
@@ -168,16 +216,20 @@ export class OfflineDemoSimulator {
       index_formula: 'y * width * depth + z * width + x',
       blocks: Array.from(this.blocks),
       block_meta: Array.from(this.blockMeta),
-      state: structuredClone(this.state),
+      state: this.getState(),
     };
   }
 
   public getState(): WorldStateSnapshot {
+    this.state.entities = this.demoEntities.map(({ target: _t, wait: _w, ...rest }) => rest);
+    this.state.stats.entities_count = this.demoEntities.length;
     return structuredClone(this.state);
   }
 
   public reset(seed = Math.floor(Math.random() * 9000) + 1000): WorldInitMessage {
     this.state = this.createInitialState(seed);
+    this.demoEntities = [];
+    this.entityCounter = 0;
     this.generateIsland(seed);
     return this.getInitMessage();
   }
@@ -194,12 +246,21 @@ export class OfflineDemoSimulator {
     return this.blocks[blockIndex(x, y, z)];
   }
 
+  private surfaceTopAt(x: number, z: number): number {
+    for (let y = WORLD_HEIGHT - 2; y >= 1; y--) {
+      const b = this.getBlock(x, y, z);
+      if (b !== BlockId.AIR && b !== BlockId.LEAVES && b !== BlockId.WOOD_LOG) {
+        return y;
+      }
+    }
+    return this.surfaceY[z * WORLD_WIDTH + x];
+  }
+
   private generateIsland(seed: number): void {
     this.blocks.fill(BlockId.AIR);
     this.blockMeta.fill(0);
     this.surfaceY.fill(-1);
     this.rng = mulberry32(seed);
-    this.phaseStage = 'explore';
     this.actionTimer = 0;
     this.buildQueue = [];
     this.farmQueue = [];
@@ -239,7 +300,6 @@ export class OfflineDemoSimulator {
       }
     }
 
-    // Carve natural freshwater pond
     for (let z = pondCz - 2; z <= pondCz + 2; z++) {
       for (let x = pondCx - 2; x <= pondCx + 2; x++) {
         const pd = Math.hypot(x - pondCx, z - pondCz);
@@ -256,7 +316,6 @@ export class OfflineDemoSimulator {
       }
     }
 
-    // Place natural forest (trees, boulders, wild berry bushes) - NO house or farm!
     let treeCount = 0;
     const treePositions: Array<{ x: number; z: number }> = [];
     for (let z = 4; z < WORLD_DEPTH - 4; z++) {
@@ -264,7 +323,7 @@ export class OfflineDemoSimulator {
         const sy = this.surfaceY[z * WORLD_WIDTH + x];
         if (sy <= 0) continue;
         if (this.getBlock(x, sy, z) !== BlockId.GRASS) continue;
-        if (Math.hypot(x - 15.5, z - 15.5) < 2.2) continue; // breathing room at spawn
+        if (Math.hypot(x - 15.5, z - 15.5) < 2.2) continue;
         if (Math.hypot(x - pondCx, z - pondCz) < 3.4) continue;
 
         const tooClose = treePositions.some((tp) => Math.hypot(tp.x - x, tp.z - z) < 3.1);
@@ -286,7 +345,6 @@ export class OfflineDemoSimulator {
     this.state.npc.grid_pos = { x: 15, y: spawnSy + 1, z: 15 };
     this.state.stats.trees_count = treeCount;
 
-    // Prepare cozy cabin build plan (built progressively later by Aiden)
     const hx = 10;
     const hz = 11;
     const hy = Math.max(10, this.surfaceY[hz * WORLD_WIDTH + hx]) + 1;
@@ -350,7 +408,7 @@ export class OfflineDemoSimulator {
         z: 13.5,
         action: 'chopping',
         goal: 'Gather timber from the forest',
-        thought: 'These oaks will provide sturdy planks for a cabin roof and walls.',
+        thought: 'These trees will provide sturdy planks for a cabin roof and walls.',
       },
       {
         x: 12.2,
@@ -378,10 +436,11 @@ export class OfflineDemoSimulator {
     this.updatePerception();
   }
 
-  private placeTree(x: number, baseY: number, z: number): void {
+  private placeTree(x: number, baseY: number, z: number, updates?: BlockUpdate[]): void {
     const trunkH = 3 + Math.floor(this.rng() * 2);
     for (let dy = 0; dy < trunkH; dy++) {
       this.setBlock(x, baseY + dy, z, BlockId.WOOD_LOG);
+      updates?.push({ x, y: baseY + dy, z, block: BlockId.WOOD_LOG, meta: 0 });
     }
     const top = baseY + trunkH;
     for (let dy = -1; dy <= 1; dy++) {
@@ -395,6 +454,7 @@ export class OfflineDemoSimulator {
           const bz = z + dz;
           if (this.getBlock(bx, by, bz) === BlockId.AIR) {
             this.setBlock(bx, by, bz, BlockId.LEAVES);
+            updates?.push({ x: bx, y: by, z: bz, block: BlockId.LEAVES, meta: 0 });
           }
         }
       }
@@ -411,7 +471,6 @@ export class OfflineDemoSimulator {
     const simDt = dtSeconds * mult;
     this.state.tick += 1;
 
-    // Advance day cycle (~150 seconds per day at 1x)
     const prevT = this.state.time_of_day;
     let nextT = prevT + simDt / 150;
     if (nextT >= 1) {
@@ -428,7 +487,6 @@ export class OfflineDemoSimulator {
     this.state.clock_str = formatClock(nextT);
     this.state.phase = phaseFromTime(nextT);
 
-    // Needs decay gently
     const needs = this.state.npc.needs;
     needs.hunger = Math.max(15, Number((needs.hunger - simDt * 0.18).toFixed(1)));
     needs.thirst = Math.max(15, Number((needs.thirst - simDt * 0.24).toFixed(1)));
@@ -476,7 +534,8 @@ export class OfflineDemoSimulator {
       }
     }
 
-    // Grow planted crops occasionally
+    this.updateEntities(simDt);
+
     if (this.state.tick % 20 === 0) {
       let ripe = 0;
       let growing = 0;
@@ -509,6 +568,70 @@ export class OfflineDemoSimulator {
 
     this.updatePerception();
     return { blockUpdates, state: this.getState(), trace };
+  }
+
+  private updateEntities(dt: number): void {
+    for (const ent of this.demoEntities) {
+      if (!ent.target) {
+        ent.wait = Math.max(0, ent.wait - dt);
+        if (ent.wait <= 0) {
+          const candidates: [number, number, number][] = [];
+          for (const [dx, dz] of [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1],
+            [1, 1],
+            [-1, 1],
+            [1, -1],
+            [-1, -1],
+          ]) {
+            const nx = ent.grid_pos.x + dx;
+            const nz = ent.grid_pos.z + dz;
+            if (nx < 3 || nx >= WORLD_WIDTH - 3 || nz < 3 || nz >= WORLD_DEPTH - 3) continue;
+            const sy = this.surfaceY[nz * WORLD_WIDTH + nx];
+            if (sy > 0 && Math.abs(sy + 1 - ent.grid_pos.y) <= 1) {
+              candidates.push([nx, sy + 1, nz]);
+            }
+          }
+          if (candidates.length > 0) {
+            ent.target = candidates[Math.floor(this.rng() * candidates.length)];
+            ent.animation = 'walking';
+          } else {
+            ent.wait = 1.2;
+          }
+        } else {
+          ent.animation =
+            ent.kind === 'cat' && ent.wait > 1.0
+              ? 'sitting'
+              : (ent.kind === 'sheep' || ent.kind === 'deer') && ent.wait > 0.8
+                ? 'grazing'
+                : 'idle';
+        }
+        continue;
+      }
+
+      const [tx, ty, tz] = ent.target;
+      const dx = tx - ent.position.x;
+      const dy = ty - ent.position.y;
+      const dz = tz - ent.position.z;
+      const dist = Math.hypot(dx, dy, dz);
+      const spd = ent.kind === 'fox' || ent.kind === 'deer' ? 1.8 : 1.35;
+      const step = spd * dt;
+      if (dist > 0.01) ent.yaw = Math.atan2(dx, dz);
+      if (dist <= step) {
+        ent.position = { x: tx, y: ty, z: tz };
+        ent.grid_pos = { x: tx, y: ty, z: tz };
+        ent.target = null;
+        ent.wait = 0.8 + this.rng() * 2.2;
+        ent.animation = 'idle';
+      } else {
+        ent.position.x += (dx / dist) * step;
+        ent.position.y += (dy / dist) * step;
+        ent.position.z += (dz / dist) * step;
+        ent.animation = 'walking';
+      }
+    }
   }
 
   private completeDemoAction(action: string, updates: BlockUpdate[]): void {
@@ -550,8 +673,6 @@ export class OfflineDemoSimulator {
       npc.needs.mood = Math.min(100, npc.needs.mood + 6);
       npc.needs.energy = Math.min(100, npc.needs.energy + 8);
     }
-    this.phaseStage = this.state.stats.house_progress > 0 ? 'build' : 'gather';
-    void this.phaseStage;
   }
 
   private emitDemoTrace(action: string, goal: string, thought: string): LlmTrace {
@@ -598,6 +719,16 @@ export class OfflineDemoSimulator {
         }
       }
     }
+    for (const ent of this.demoEntities) {
+      entities.push({
+        kind: ent.kind,
+        label: `${ent.name} (${ent.kind})`,
+        distance: Number(Math.hypot(ent.position.x - gx, ent.position.z - gz).toFixed(1)),
+        x: ent.grid_pos.x,
+        y: ent.grid_pos.y,
+        z: ent.grid_pos.z,
+      });
+    }
     entities.sort((a, b) => a.distance - b.distance);
     this.state.npc.perception.nearby_entities = entities.slice(0, 6);
   }
@@ -621,7 +752,7 @@ export class OfflineDemoSimulator {
   public handleGodIntervene(action: string, value?: unknown): BlockUpdate[] {
     const updates: BlockUpdate[] = [];
     if (action === 'set_time') {
-      const map: Record<string, number> = { dawn: 0.26, noon: 0.5, dusk: 0.77, night: 0.94 };
+      const map: Record<string, number> = { dawn: 0.25, noon: 0.5, dusk: 0.76, night: 0.92 };
       const t = typeof value === 'number' ? value : (map[String(value)] ?? 0.5);
       this.state.time_of_day = ((t % 1) + 1) % 1;
       this.state.clock_str = formatClock(this.state.time_of_day);
@@ -629,46 +760,99 @@ export class OfflineDemoSimulator {
     } else if (action === 'set_weather' && typeof value === 'string') {
       this.state.weather = value as WeatherType;
     } else if (action === 'whisper' && typeof value === 'string' && value.trim()) {
-      this.state.npc.thought = `I heard a whisper on the wind: "${value.trim()}"`;
+      this.state.npc.thought = `I heard a whisper: "${value.trim()}"`;
       this.state.npc.memories.unshift({
         day: this.state.day,
         clock: this.state.clock_str,
-        text: `Felt a mysterious inspiration: "${value.trim()}"`,
+        text: `Felt an inspiration: "${value.trim()}"`,
       });
       this.state.npc.memories = this.state.npc.memories.slice(0, 15);
     } else if (action === 'heal_npc') {
       this.state.npc.needs = { hunger: 100, energy: 100, thirst: 100, health: 100, mood: 100 };
     } else if (action === 'drop_gift' && typeof value === 'object' && value !== null) {
-      const gift = value as { item?: string; amount?: number };
-      const item = gift.item ?? 'berries';
-      const amt = gift.amount ?? 3;
-      this.state.npc.inventory[item] = (this.state.npc.inventory[item] ?? 0) + amt;
+      const gift = value as Record<string, unknown>;
+      if (typeof gift.item === 'string') {
+        const amt = Number(gift.amount ?? 1);
+        this.state.npc.inventory[gift.item] = (this.state.npc.inventory[gift.item] ?? 0) + amt;
+      } else {
+        for (const [k, v] of Object.entries(gift)) {
+          if (typeof v === 'number') {
+            this.state.npc.inventory[k] = (this.state.npc.inventory[k] ?? 0) + v;
+          }
+        }
+      }
+    } else if (action === 'spawn_tree') {
+      const v = (value ?? {}) as { x?: number; y?: number; z?: number };
+      const tx = typeof v.x === 'number' ? v.x : 6 + Math.floor(this.rng() * 20);
+      const tz = typeof v.z === 'number' ? v.z : 6 + Math.floor(this.rng() * 20);
+      const sy = typeof v.y === 'number' ? v.y - 1 : this.surfaceTopAt(tx, tz);
+      if (sy > 0 && this.getBlock(tx, sy + 1, tz) === BlockId.AIR) {
+        this.placeTree(tx, sy + 1, tz, updates);
+        this.state.stats.trees_count += 1;
+      }
+    } else if (action === 'spawn_object' && typeof value === 'object' && value !== null) {
+      const v = value as { object?: string | number; x?: number; y?: number; z?: number; meta?: number };
+      const tx = typeof v.x === 'number' ? v.x : Math.max(4, Math.min(27, this.state.npc.grid_pos.x + 2));
+      const tz = typeof v.z === 'number' ? v.z : Math.max(4, Math.min(27, this.state.npc.grid_pos.z));
+      const ty = typeof v.y === 'number' ? v.y : Math.max(1, this.surfaceTopAt(tx, tz) + 1);
+      if (v.object === 'tree') {
+        this.placeTree(tx, ty, tz, updates);
+        this.state.stats.trees_count += 1;
+      } else {
+        const bid = typeof v.object === 'number' ? v.object : OBJECT_NAME_MAP[String(v.object ?? '')];
+        if (bid !== undefined) {
+          if (bid === BlockId.CROP_WHEAT) {
+            this.setBlock(tx, ty - 1, tz, BlockId.FARMLAND, 1);
+            this.setBlock(tx, ty, tz, BlockId.CROP_WHEAT, 3);
+            updates.push({ x: tx, y: ty - 1, z: tz, block: BlockId.FARMLAND, meta: 1 });
+            updates.push({ x: tx, y: ty, z: tz, block: BlockId.CROP_WHEAT, meta: 3 });
+          } else {
+            const meta = v.meta ?? (bid === BlockId.FARMLAND ? 1 : 0);
+            this.setBlock(tx, ty, tz, bid, meta);
+            updates.push({ x: tx, y: ty, z: tz, block: bid, meta });
+            if (bid === BlockId.DOOR_CLOSED && ty + 1 < WORLD_HEIGHT) {
+              this.setBlock(tx, ty + 1, tz, bid, 0);
+              updates.push({ x: tx, y: ty + 1, z: tz, block: bid, meta: 0 });
+            }
+          }
+          this.state.stats.blocks_placed += 1;
+        }
+      }
+    } else if (action === 'remove_block' && typeof value === 'object' && value !== null) {
+      const v = value as { x: number; y: number; z: number };
+      if (typeof v.x === 'number' && typeof v.y === 'number' && typeof v.z === 'number') {
+        this.setBlock(v.x, v.y, v.z, BlockId.AIR, 0);
+        updates.push({ x: v.x, y: v.y, z: v.z, block: BlockId.AIR, meta: 0 });
+        this.state.stats.blocks_broken += 1;
+      }
+    } else if (action === 'spawn_entity' && typeof value === 'object' && value !== null) {
+      const v = value as { kind?: EntityKind; name?: string; x?: number; y?: number; z?: number };
+      const kind = (v.kind ?? 'cat') as EntityKind;
+      const sx = typeof v.x === 'number' ? v.x : Math.max(5, Math.min(26, this.state.npc.grid_pos.x + (this.rng() > 0.5 ? 2 : -2)));
+      const sz = typeof v.z === 'number' ? v.z : Math.max(5, Math.min(26, this.state.npc.grid_pos.z + (this.rng() > 0.5 ? 2 : -2)));
+      const sy = typeof v.y === 'number' ? v.y : Math.max(10, this.surfaceTopAt(sx, sz) + 1);
+      this.entityCounter += 1;
+      const names = DEFAULT_NAMES[kind] ?? ['Friend'];
+      const name = (v.name ?? '').trim() || names[(this.entityCounter - 1) % names.length];
+      this.demoEntities.push({
+        id: `ent-${this.entityCounter}`,
+        kind,
+        name,
+        variant: this.entityCounter % 4,
+        position: { x: sx, y: sy, z: sz },
+        grid_pos: { x: sx, y: sy, z: sz },
+        yaw: this.rng() * Math.PI * 2,
+        animation: 'idle',
+        target: null,
+        wait: 1.0,
+      });
       this.state.npc.memories.unshift({
         day: this.state.day,
         clock: this.state.clock_str,
-        text: `Received ${amt} ${item} seemingly from the sky.`,
+        text: `A ${kind} named ${name} joined the island.`,
       });
-    } else if (action === 'spawn_tree') {
-      for (let tries = 0; tries < 40; tries++) {
-        const x = 6 + Math.floor(this.rng() * 20);
-        const z = 6 + Math.floor(this.rng() * 20);
-        const sy = this.surfaceY[z * WORLD_WIDTH + x];
-        if (sy > 0 && this.getBlock(x, sy, z) === BlockId.GRASS && this.getBlock(x, sy + 1, z) === BlockId.AIR) {
-          this.placeTree(x, sy + 1, z);
-          this.state.stats.trees_count += 1;
-          for (let dy = 1; dy <= 6; dy++) {
-            for (let dx = -2; dx <= 2; dx++) {
-              for (let dz = -2; dz <= 2; dz++) {
-                const b = this.getBlock(x + dx, sy + dy, z + dz);
-                if (b !== BlockId.AIR) {
-                  updates.push({ x: x + dx, y: sy + dy, z: z + dz, block: b, meta: 0 });
-                }
-              }
-            }
-          }
-          break;
-        }
-      }
+    } else if (action === 'clear_entities') {
+      this.demoEntities = [];
     }
     return updates;
   }

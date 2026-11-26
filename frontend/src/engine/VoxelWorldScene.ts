@@ -13,6 +13,7 @@ import {
   blockIndex,
   type BlockUpdate,
   type CameraMode,
+  type GodTool,
   type InspectTarget,
   type WorldInitMessage,
   type WorldStateSnapshot,
@@ -24,11 +25,13 @@ import {
   type AnimatedPondFish,
 } from './voxelMesher';
 import { NpcModel } from './npcModel';
+import { EntityManager } from './entityModels';
 import { AtmosphereSystem } from './atmosphere';
 import { WorldEffects } from './particles';
 
 export interface SceneCallbacks {
   onSelectTarget: (target: InspectTarget | null) => void;
+  onPlaceAt?: (placeCoord: { x: number; y: number; z: number }, hitCoord: { x: number; y: number; z: number }) => void;
   onNpcScreenPos?: (pos: { x: number; y: number; visible: boolean }) => void;
 }
 
@@ -53,8 +56,12 @@ export class VoxelWorldScene {
   private pondFish: AnimatedPondFish[] = [];
 
   private npcModel = new NpcModel();
+  private entityManager: EntityManager;
   private atmosphere: AtmosphereSystem;
   private effects: WorldEffects;
+
+  private hoverCursor: THREE.LineSegments;
+  private activeTool: GodTool = { mode: 'inspect' };
 
   private cameraMode: CameraMode = 'orbit';
   private showPath = true;
@@ -119,12 +126,22 @@ export class VoxelWorldScene {
 
     this.scene.add(this.worldGroup);
     this.scene.add(this.npcModel.root);
+    this.entityManager = new EntityManager(this.scene);
 
     this.atmosphere = new AtmosphereSystem(this.scene);
     this.atmosphere.setWaterNormalMap(this.mats.waterNormalMap);
     this.effects = new WorldEffects(this.scene);
 
+    // Minimalist white hover cursor for placement/erase modes
+    this.hoverCursor = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(1.02, 1.02, 1.02)),
+      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75 }),
+    );
+    this.hoverCursor.visible = false;
+    this.scene.add(this.hoverCursor);
+
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.addEventListener('pointermove', this.onPointerMove);
     this.renderer.domElement.addEventListener('pointerup', this.onPointerUp);
 
     this.resizeObserver = new ResizeObserver(() => this.handleResize());
@@ -143,8 +160,84 @@ export class VoxelWorldScene {
     this.bloomPass.setSize(w, h);
   };
 
+  private raycastBlockHit(
+    clientX: number,
+    clientY: number,
+  ): {
+    hitKind: 'npc' | 'entity' | 'block';
+    entityId?: string;
+    hitCoord?: { x: number; y: number; z: number };
+    placeCoord?: { x: number; y: number; z: number };
+  } | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+
+    const targets: THREE.Object3D[] = [this.npcModel.root, this.entityManager.group];
+    if (this.dioramaRoot) targets.push(this.dioramaRoot);
+
+    const hits = this.raycaster.intersectObjects(targets, true);
+    if (hits.length === 0) return null;
+
+    const hit = hits[0];
+    if (hit.object.userData.isNpc) {
+      return { hitKind: 'npc' };
+    }
+    if (hit.object.userData.entityId) {
+      return { hitKind: 'entity', entityId: String(hit.object.userData.entityId) };
+    }
+    if (hit.object.userData.blockCoord) {
+      const coord = hit.object.userData.blockCoord as { x: number; y: number; z: number };
+      const placeCoord = { x: coord.x, y: Math.min(WORLD_HEIGHT - 1, coord.y + 1), z: coord.z };
+      return { hitKind: 'block', hitCoord: coord, placeCoord };
+    }
+
+    const normal = hit.face?.normal ?? new THREE.Vector3(0, 1, 0);
+    const pIn = hit.point.clone().addScaledVector(normal, -0.08);
+    const bx = Math.floor(pIn.x);
+    const by = Math.floor(pIn.y);
+    const bz = Math.floor(pIn.z);
+    if (bx >= 0 && bx < WORLD_WIDTH && by >= 0 && by < WORLD_HEIGHT && bz >= 0 && bz < WORLD_DEPTH) {
+      const b = this.blocks[blockIndex(bx, by, bz)];
+      if (b !== BlockId.AIR) {
+        const pOut = hit.point.clone().addScaledVector(normal, 0.18);
+        const px = Math.max(0, Math.min(WORLD_WIDTH - 1, Math.floor(pOut.x)));
+        const py = Math.max(0, Math.min(WORLD_HEIGHT - 1, Math.floor(pOut.y)));
+        const pz = Math.max(0, Math.min(WORLD_DEPTH - 1, Math.floor(pOut.z)));
+        return {
+          hitKind: 'block',
+          hitCoord: { x: bx, y: by, z: bz },
+          placeCoord: { x: px, y: py, z: pz },
+        };
+      }
+    }
+    return null;
+  }
+
   private onPointerDown = (e: PointerEvent): void => {
     this.pointerDownPos = { x: e.clientX, y: e.clientY };
+  };
+
+  private onPointerMove = (e: PointerEvent): void => {
+    if (this.activeTool.mode === 'inspect' || this.cameraMode === 'pov') {
+      this.hoverCursor.visible = false;
+      return;
+    }
+    const res = this.raycastBlockHit(e.clientX, e.clientY);
+    if (!res || res.hitKind !== 'block') {
+      this.hoverCursor.visible = false;
+      return;
+    }
+    const target = this.activeTool.mode === 'erase' ? res.hitCoord : res.placeCoord;
+    if (!target) {
+      this.hoverCursor.visible = false;
+      return;
+    }
+    this.hoverCursor.visible = true;
+    this.hoverCursor.position.set(target.x + 0.5, target.y + 0.5, target.z + 0.5);
   };
 
   private onPointerUp = (e: PointerEvent): void => {
@@ -152,65 +245,53 @@ export class VoxelWorldScene {
     const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
     if (dist > 5) return;
 
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    const ndc = new THREE.Vector2(
-      ((e.clientX - rect.left) / rect.width) * 2 - 1,
-      -((e.clientY - rect.top) / rect.height) * 2 + 1,
-    );
-    this.raycaster.setFromCamera(ndc, this.camera);
+    const res = this.raycastBlockHit(e.clientX, e.clientY);
 
-    const targets: THREE.Object3D[] = [this.npcModel.root];
-    if (this.dioramaRoot) targets.push(this.dioramaRoot);
+    if (this.activeTool.mode !== 'inspect') {
+      if (res && res.hitKind === 'block' && res.hitCoord && res.placeCoord) {
+        this.callbacks.onPlaceAt?.(res.placeCoord, res.hitCoord);
+      }
+      return;
+    }
 
-    const hits = this.raycaster.intersectObjects(targets, true);
-    if (hits.length === 0) {
+    if (!res) {
       this.callbacks.onSelectTarget(null);
       return;
     }
-
-    const hit = hits[0];
-    if (hit.object.userData.isNpc) {
+    if (res.hitKind === 'npc') {
       this.callbacks.onSelectTarget({ kind: 'npc' });
       return;
     }
-
-    if (hit.object.userData.blockCoord) {
-      const { x, y, z } = hit.object.userData.blockCoord as { x: number; y: number; z: number };
-      const idx = blockIndex(x, y, z);
+    if (res.hitKind === 'entity' && res.entityId) {
+      const ent = this.entityManager.getEntityById(res.entityId);
+      this.callbacks.onSelectTarget(ent ? { kind: 'entity', entity: ent } : null);
+      return;
+    }
+    if (res.hitCoord) {
+      const idx = blockIndex(res.hitCoord.x, res.hitCoord.y, res.hitCoord.z);
       this.callbacks.onSelectTarget({
         kind: 'block',
-        x,
-        y,
-        z,
+        x: res.hitCoord.x,
+        y: res.hitCoord.y,
+        z: res.hitCoord.z,
         block: this.blocks[idx],
         meta: this.blockMeta[idx],
       });
-      return;
     }
-
-    // Instanced terrain/water hit: resolve block coordinate from hit point
-    const normal = hit.face?.normal ?? new THREE.Vector3(0, 1, 0);
-    const p = hit.point.clone().addScaledVector(normal, -0.08);
-    const bx = Math.floor(p.x);
-    const by = Math.floor(p.y);
-    const bz = Math.floor(p.z);
-    if (bx >= 0 && bx < WORLD_WIDTH && by >= 0 && by < WORLD_HEIGHT && bz >= 0 && bz < WORLD_DEPTH) {
-      const idx = blockIndex(bx, by, bz);
-      const b = this.blocks[idx];
-      if (b !== BlockId.AIR) {
-        this.callbacks.onSelectTarget({
-          kind: 'block',
-          x: bx,
-          y: by,
-          z: bz,
-          block: b,
-          meta: this.blockMeta[idx],
-        });
-        return;
-      }
-    }
-    this.callbacks.onSelectTarget(null);
   };
+
+  public setGodTool(tool: GodTool): void {
+    this.activeTool = tool;
+    if (tool.mode === 'inspect') {
+      this.hoverCursor.visible = false;
+      this.renderer.domElement.style.cursor = 'grab';
+    } else {
+      this.renderer.domElement.style.cursor = 'crosshair';
+      (this.hoverCursor.material as THREE.LineBasicMaterial).color.setHex(
+        tool.mode === 'erase' ? 0xf87171 : 0xffffff,
+      );
+    }
+  }
 
   public applyWorldInit(msg: WorldInitMessage): void {
     this.blocks.fill(0);
@@ -262,6 +343,7 @@ export class VoxelWorldScene {
       this.prevNpcPos.copy(this.npcModel.root.position);
     }
 
+    this.entityManager.sync(state.entities ?? []);
     this.effects.setTargetBlock(npc.target_block ?? null);
     this.effects.setPath(npc.path ?? [], this.showPath);
   }
@@ -291,6 +373,7 @@ export class VoxelWorldScene {
     if (mode === 'pov') {
       this.controls.enabled = false;
       this.npcModel.root.visible = false;
+      this.hoverCursor.visible = false;
     } else {
       this.controls.enabled = true;
       this.npcModel.root.visible = true;
@@ -332,6 +415,8 @@ export class VoxelWorldScene {
     }
 
     this.npcModel.update(dt);
+    this.entityManager.update(dt);
+
     if (this.npcModel.isWatering()) {
       this.waterEmitAccum += dt;
       if (this.waterEmitAccum >= 0.14) {
@@ -344,7 +429,6 @@ export class VoxelWorldScene {
     this.atmosphere.update(dt, this.elapsed, this.timeOfDay, this.weather, this.scene);
     this.effects.update(dt, this.elapsed);
 
-    // Gentle breeze sway on crops & billowing tree canopies
     for (let i = 0; i < this.cropMeshes.length; i++) {
       this.cropMeshes[i].rotation.z = Math.sin(this.elapsed * 2.2 + i * 0.7) * 0.05;
     }
@@ -353,7 +437,6 @@ export class VoxelWorldScene {
       this.treeCanopies[i].rotation.x = Math.cos(this.elapsed * 0.9 + i * 0.9) * 0.015;
     }
 
-    // Swimming koi fish in pond
     for (const f of this.pondFish) {
       const ang = this.elapsed * f.speed + f.phase;
       const nx = f.centerX + Math.cos(ang) * f.radius;
@@ -402,6 +485,7 @@ export class VoxelWorldScene {
     cancelAnimationFrame(this.rafId);
     this.resizeObserver.disconnect();
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.removeEventListener('pointermove', this.onPointerMove);
     this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp);
     this.controls.dispose();
     this.mats.waterNormalMap.dispose();
