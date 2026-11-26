@@ -5,7 +5,9 @@ import type {
   LlmTestResponse,
   LlmTrace,
   NpcState,
+  SaveSlotSummary,
   SimSpeed,
+  WorldSavePayload,
   WorldStateSnapshot,
 } from '../types/world';
 
@@ -180,5 +182,39 @@ export const backendApi = {
     return requestJson<LlmTrace[] | { traces: LlmTrace[] }>(`/api/llm/traces?${params.toString()}`).then(
       (res) => (Array.isArray(res) ? res : (res?.traces ?? [])),
     );
+  },
+
+  downloadSave(): Promise<WorldSavePayload> {
+    return requestJson('/api/sim/save');
+  },
+
+  loadSave(payload: WorldSavePayload): Promise<{ ok: boolean; state: WorldStateSnapshot }> {
+    return requestJson('/api/sim/load', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  listSaves(): Promise<{ saves: SaveSlotSummary[] }> {
+    return requestJson('/api/sim/saves');
+  },
+
+  createSaveSlot(name: string): Promise<{ ok: boolean; save: SaveSlotSummary }> {
+    return requestJson('/api/sim/saves', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  loadSaveSlot(slot: string): Promise<{ ok: boolean; slot: string; state: WorldStateSnapshot }> {
+    return requestJson(`/api/sim/saves/${encodeURIComponent(slot)}/load`, {
+      method: 'POST',
+    });
+  },
+
+  deleteSaveSlot(slot: string): Promise<{ ok: boolean; slot: string }> {
+    return requestJson(`/api/sim/saves/${encodeURIComponent(slot)}`, {
+      method: 'DELETE',
+    });
   },
 };

@@ -194,3 +194,45 @@ def test_interventions_validate_atomically():
     for action,value in [('set_time',1),('set_time',float('nan')),('set_weather','snow'),('spawn_tree',{'x':15,'z':15})]:
         with pytest.raises(ValueError):
             s.intervene(action,value)
+
+
+def test_simulation_save_load_roundtrip():
+    s = Simulation(seed=77)
+    s.step(0.5, force=True)
+    s.intervene('set_weather', 'storm')
+    s.intervene('spawn_object', {'object': 'wheat', 'x': 19, 'z': 19})
+    s.intervene('spawn_entity', {'kind': 'cat', 'name': 'Milo'})
+    s.world.set(17, 11, 14, 8)
+    s.home.water = 42.5
+    s.home.fuel = 18.0
+    s.home.installed.add('stove')
+    s.home.storage['bread'] = 4
+    s.home.fertilized_plots.add((19, 10, 19))
+
+    elena = s.add_agent(name='Elena', role='builder')
+    elena.inventory['wood_log'] = 9
+    elena.household.tools['axe'] = 0.75
+    elena.thought = 'Finish the roof shingles today.'
+
+    exported = s.export_save()
+    restored = Simulation.from_save(exported)
+
+    assert restored.seed == 77
+    assert restored.tick == s.tick
+    assert restored.weather == 'storm' and restored.weather_override is True
+    assert restored.world.blocks == s.world.blocks
+    assert restored.world.meta == s.world.meta
+    assert restored.world.materials == s.world.materials
+    assert restored.world.locations == s.world.locations
+    assert restored.home.water == 42.5 and restored.home.fuel == 18.0
+    assert 'stove' in restored.home.installed and restored.home.storage['bread'] == 4
+    assert (19, 10, 19) in restored.home.fertilized_plots
+    assert restored.crop_age == s.crop_age
+    assert len(restored.entities) == 1 and restored.entities[0]['name'] == 'Milo'
+    assert elena.id in restored.agents
+    assert restored.agents[elena.id].name == 'Elena'
+    assert restored.agents[elena.id].inventory['wood_log'] == 9
+    assert restored.agents[elena.id].household.tools['axe'] == 0.75
+    assert restored.agents[elena.id].thought == 'Finish the roof shingles today.'
+    restored.step(0.2, force=True)
+    assert restored.tick == s.tick + 1

@@ -27,6 +27,7 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+backend/saves/
 
 # Logs & OS Files
 *.log

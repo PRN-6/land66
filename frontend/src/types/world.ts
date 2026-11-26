@@ -355,3 +355,51 @@ export type GodTool =
   | { mode: 'object'; object: string; label: string }
   | { mode: 'entity'; kind: EntityKind; label: string; customName?: string }
   | { mode: 'agent'; role: AgentRole; label: string; customName?: string };
+
+export interface SaveSlotSummary {
+  slot: string;
+  name: string;
+  saved_at: string;
+  day: number;
+  clock_str: string;
+  tick: number;
+  weather: string;
+  agents_count: number;
+  entities_count: number;
+  seed: number;
+  size_bytes: number;
+}
+
+export interface WorldSavePayload {
+  format: string;
+  save_version?: number;
+  name?: string;
+  saved_at?: string;
+  seed: number;
+  tick: number;
+  elapsed: number;
+  paused: boolean;
+  speed: number;
+  weather: string;
+  weather_override: boolean;
+  world: {
+    seed: number;
+    width: number;
+    height: number;
+    depth: number;
+    blocks: number[];
+    meta: number[];
+    materials?: Record<string, string> | string[];
+    decorations?: unknown[];
+    resource_nodes?: Record<string, unknown>;
+  };
+  home?: Record<string, unknown>;
+  crop_age?: unknown[];
+  wet_age?: unknown[];
+  berry_regrowth?: unknown[];
+  sapling_age?: unknown[];
+  entities?: unknown[];
+  agents: unknown[];
+  brains?: Record<string, unknown>;
+  [key: string]: unknown;
+}

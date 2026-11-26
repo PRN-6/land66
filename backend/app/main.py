@@ -110,6 +110,52 @@ class Runtime:
         self.sync_status()
         self.publish(self.sim.world_init())
 
+    def export_save(self, name: str | None = None) -> dict:
+        from datetime import datetime, timezone
+        from .save_store import SAVE_FORMAT
+
+        data = self.sim.export_save()
+        data["format"] = SAVE_FORMAT
+        data["name"] = (name or f"Day {self.sim.day} ({self.sim.clock_str})").strip()[:64]
+        data["saved_at"] = datetime.now(timezone.utc).isoformat()
+        data["brains"] = {
+            agent_id: brain.config.public()
+            for agent_id, brain in self.brains.items()
+        }
+        return data
+
+    async def load_save(self, data: dict) -> dict:
+        await self.cancel_thinking()
+        old_brains = dict(self.brains)
+        new_sim = Simulation.from_save(data)
+        self.sim = new_sim
+        saved_brains = data.get("brains") if isinstance(data.get("brains"), dict) else {}
+        new_brains: dict[str, Brain] = {}
+        new_ticks: dict[str, int] = {}
+        for agent_id in self.sim.agents:
+            brain = Brain()
+            saved_cfg = saved_brains.get(agent_id)
+            if isinstance(saved_cfg, dict):
+                patch = {
+                    k: saved_cfg[k]
+                    for k in ("provider", "model", "base_url", "temperature", "decision_interval_ticks", "enabled")
+                    if k in saved_cfg and saved_cfg[k] is not None
+                }
+                prev = old_brains.get(agent_id)
+                if prev and prev.config.api_key and patch.get("provider") == prev.config.provider:
+                    patch["api_key"] = prev.config.api_key
+                try:
+                    brain.configure(patch)
+                except Exception:
+                    pass
+            new_brains[agent_id] = brain
+            new_ticks[agent_id] = self.sim.tick
+        self.brains = new_brains
+        self.next_think_ticks = new_ticks
+        self.sync_status()
+        self.publish(self.sim.world_init())
+        return self.sim.snapshot()
+
     def complete_thinking(self):
         for aid, task in list(self.thinking_tasks.items()):
             if not task.done():
@@ -337,6 +383,70 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
             return rt.sim.snapshot()
         rt.broadcast_tick()
         return rt.sim.snapshot()
+
+    @app.get("/api/sim/save")
+    def download_save():
+        from fastapi.responses import JSONResponse
+        rt = runtime()
+        payload = rt.export_save()
+        filename = f"land66-day{rt.sim.day}-tick{rt.sim.tick}.json"
+        return JSONResponse(
+            content=payload,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.post("/api/sim/load")
+    async def upload_save(payload: dict):
+        rt = runtime()
+        try:
+            snapshot = await rt.load_save(payload)
+        except ValueError as err:
+            raise HTTPException(400, str(err))
+        return {"ok": True, "state": snapshot}
+
+    @app.get("/api/sim/saves")
+    def list_saves():
+        from .save_store import list_save_slots
+        return {"saves": list_save_slots()}
+
+    @app.post("/api/sim/saves")
+    def create_save_slot(req: dict):
+        from .save_store import SaveSlotRequest, write_save_slot
+        from pydantic import ValidationError
+        rt = runtime()
+        try:
+            validated = SaveSlotRequest(**req)
+            payload = rt.export_save(validated.name)
+            summary = write_save_slot(validated.name, payload)
+        except ValidationError as err:
+            raise HTTPException(422, str(err))
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        return {"ok": True, "save": summary}
+
+    @app.post("/api/sim/saves/{slot}/load")
+    async def load_named_save(slot: str):
+        from .save_store import read_save_slot
+        rt = runtime()
+        try:
+            data = read_save_slot(slot)
+            snapshot = await rt.load_save(data)
+        except FileNotFoundError as err:
+            raise HTTPException(404, str(err))
+        except ValueError as err:
+            raise HTTPException(400, str(err))
+        return {"ok": True, "slot": slot, "state": snapshot}
+
+    @app.delete("/api/sim/saves/{slot}")
+    def remove_named_save(slot: str):
+        from .save_store import delete_save_slot
+        try:
+            removed = delete_save_slot(slot)
+        except FileNotFoundError as err:
+            raise HTTPException(404, str(err))
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        return {"ok": True, "slot": removed}
 
     @app.post("/api/god/intervene")
     async def intervene(command: Intervention):

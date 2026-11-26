@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { VoxelWorldScene } from './engine/VoxelWorldScene';
 import { backendApi } from './services/api';
-import { OfflineDemoSimulator } from './services/offlineDemo';
+import { OfflineDemoSimulator, offlineSaveStore } from './services/offlineDemo';
 import { WorldWsClient } from './services/wsClient';
 import type {
   AgentRole,
@@ -11,7 +11,9 @@ import type {
   InspectTarget,
   LlmTrace,
   NpcState,
+  SaveSlotSummary,
   SimSpeed,
+  WorldSavePayload,
   WorldStateSnapshot,
 } from './types/world';
 import { TopBar } from './components/TopBar';
@@ -19,6 +21,7 @@ import { AgentBar } from './components/AgentBar';
 import { GodDock } from './components/GodDock';
 import { InspectorDrawer } from './components/InspectorDrawer';
 import { LlmModal } from './components/LlmModal';
+import { SaveModal } from './components/SaveModal';
 import { InspectToast } from './components/InspectToast';
 import { NpcThoughtOverlay } from './components/NpcThoughtOverlay';
 
@@ -45,6 +48,9 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [dockTray, setDockTray] = useState<'objects' | 'life' | 'world' | null>(null);
   const [llmModalOpen, setLlmModalOpen] = useState(false);
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [saveSlots, setSaveSlots] = useState<SaveSlotSummary[]>([]);
+  const [savesLoading, setSavesLoading] = useState(false);
   const [llmAgentId, setLlmAgentId] = useState('aiden');
   const [activeTool, setActiveTool] = useState<GodTool>({ mode: 'inspect' });
   const activeToolRef = useRef<GodTool>({ mode: 'inspect' });
@@ -351,6 +357,124 @@ export function App() {
     }
   }, [setConnMode]);
 
+  const refreshSaveSlots = useCallback(async () => {
+    setSavesLoading(true);
+    try {
+      if (connectionModeRef.current === 'live') {
+        const res = await backendApi.listSaves();
+        setSaveSlots(res.saves);
+      } else {
+        setSaveSlots(offlineSaveStore.list());
+      }
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : 'Failed to list saves');
+    } finally {
+      setSavesLoading(false);
+    }
+  }, [notifyError]);
+
+  const handleOpenSavesModal = useCallback(() => {
+    setSaveModalOpen(true);
+    void refreshSaveSlots();
+  }, [refreshSaveSlots]);
+
+  const handleCreateSaveSlot = useCallback(
+    async (name: string): Promise<string | null> => {
+      try {
+        if (connectionModeRef.current === 'live') {
+          await backendApi.createSaveSlot(name);
+        } else {
+          offlineSaveStore.save(name, demoSim.exportSave(name));
+        }
+        await refreshSaveSlots();
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : 'Failed to save checkpoint';
+      }
+    },
+    [refreshSaveSlots],
+  );
+
+  const handleLoadSaveSlot = useCallback(async (slot: string): Promise<string | null> => {
+    try {
+      if (connectionModeRef.current === 'live') {
+        await backendApi.loadSaveSlot(slot);
+      } else {
+        const payload = offlineSaveStore.load(slot);
+        const init = demoSim.loadSave(payload);
+        sceneRef.current?.applyWorldInit(init);
+        setWorldState(init.state);
+        setSelectedAgentId('aiden');
+        sceneRef.current?.setSelectedAgent('aiden');
+      }
+      setInspectTarget(null);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : 'Failed to load checkpoint';
+    }
+  }, []);
+
+  const handleDeleteSaveSlot = useCallback(
+    async (slot: string): Promise<string | null> => {
+      try {
+        if (connectionModeRef.current === 'live') {
+          await backendApi.deleteSaveSlot(slot);
+        } else {
+          offlineSaveStore.remove(slot);
+        }
+        await refreshSaveSlots();
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : 'Failed to delete checkpoint';
+      }
+    },
+    [refreshSaveSlots],
+  );
+
+  const handleDownloadSaveFile = useCallback(async (): Promise<string | null> => {
+    try {
+      const payload =
+        connectionModeRef.current === 'live'
+          ? await backendApi.downloadSave()
+          : demoSim.exportSave();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `land66-day${Math.floor(payload.elapsed / 360) + 1}-save.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : 'Failed to export save file';
+    }
+  }, []);
+
+  const handleUploadSaveFile = useCallback(async (file: File): Promise<string | null> => {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as WorldSavePayload;
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.world?.blocks)) {
+        return 'Invalid save file: missing world terrain data.';
+      }
+      if (connectionModeRef.current === 'live') {
+        await backendApi.loadSave(parsed);
+      } else {
+        const init = demoSim.loadSave(parsed);
+        sceneRef.current?.applyWorldInit(init);
+        setWorldState(init.state);
+        setSelectedAgentId('aiden');
+        sceneRef.current?.setSelectedAgent('aiden');
+      }
+      setInspectTarget(null);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : 'Failed to import save file';
+    }
+  }, []);
+
   return (
     <div className="relative w-full h-full overflow-hidden bg-neutral-950">
       <div ref={viewportRef} className="absolute inset-0 w-full h-full" />
@@ -374,6 +498,7 @@ export function App() {
           onToggleThoughtBubble={() => setShowThoughtBubble((v) => !v)}
           onTogglePath={handleTogglePath}
           onToggleInspector={() => setInspectorOpen((v) => !v)}
+          onOpenSavesModal={handleOpenSavesModal}
           onOpenLlmModal={() => {
             setLlmAgentId(selectedAgentId);
             setLlmModalOpen(true);
@@ -438,6 +563,22 @@ export function App() {
         onSelectAgentId={setLlmAgentId}
         onClose={() => setLlmModalOpen(false)}
         onTracesUpdated={setTraces}
+      />
+
+      <SaveModal
+        open={saveModalOpen}
+        onClose={() => setSaveModalOpen(false)}
+        mode={connectionMode === 'live' ? 'live' : 'offline_demo'}
+        currentDay={worldState.day}
+        currentClock={worldState.clock_str}
+        saves={saveSlots}
+        loading={savesLoading}
+        onRefresh={refreshSaveSlots}
+        onCreateSlot={handleCreateSaveSlot}
+        onLoadSlot={handleLoadSaveSlot}
+        onDeleteSlot={handleDeleteSaveSlot}
+        onDownloadFile={handleDownloadSaveFile}
+        onUploadFile={handleUploadSaveFile}
       />
     </div>
   );

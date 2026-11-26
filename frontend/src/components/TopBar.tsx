@@ -11,6 +11,7 @@ import {
   Play,
   RotateCcw,
   Route,
+  Save,
   SkipForward,
   Sun,
   Video,
@@ -29,6 +30,7 @@ interface TopBarProps {
   onToggleThoughtBubble: () => void;
   onTogglePath: () => void;
   onToggleInspector: () => void;
+  onOpenSavesModal: () => void;
   onOpenLlmModal: () => void;
   onToggleOfflineDemo: () => void;
 }
@@ -45,6 +47,7 @@ export function TopBar({
   onToggleThoughtBubble,
   onTogglePath,
   onToggleInspector,
+  onOpenSavesModal,
   onOpenLlmModal,
   onToggleOfflineDemo,
 }: TopBarProps) {
@@ -237,6 +240,15 @@ export function TopBar({
           }`}
         >
           <PanelRight className="w-3.5 h-3.5" />
+        </button>
+
+        <button
+          onClick={onOpenSavesModal}
+          title="Save & Load World"
+          className="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium text-neutral-300 hover:text-white hover:bg-white/10 transition cursor-pointer"
+        >
+          <Save className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Save</span>
         </button>
 
         <button

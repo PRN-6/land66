@@ -12,10 +12,12 @@ import {
   type LlmConfig,
   type LlmTrace,
   type NpcState,
+  type SaveSlotSummary,
   type SimSpeed,
   type WeatherType,
   type WorldEntity,
   type WorldInitMessage,
+  type WorldSavePayload,
   type WorldStateSnapshot,
 } from '../types/world';
 
@@ -1037,4 +1039,271 @@ export class OfflineDemoSimulator {
     }
     return updates;
   }
+
+  public exportSave(name?: string): WorldSavePayload {
+    const state = this.getState();
+    const DAY_SECONDS = 360.0;
+    const elapsed = ((state.day - 1) + state.time_of_day) * DAY_SECONDS;
+    const toVecArray = (v: { x: number; y: number; z: number }) => [v.x, v.y, v.z];
+
+    const serializeAgent = (a: NpcState, idx: number) => ({
+      id: a.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`),
+      name: a.name,
+      role: a.role ?? 'pioneer',
+      variant: a.variant ?? idx,
+      position: toVecArray(a.position),
+      grid_pos: toVecArray(a.grid_pos),
+      yaw: a.yaw,
+      needs: { ...a.needs },
+      inventory: { ...a.inventory },
+      tools: { axe: 0, pickaxe: 0, hammer: 0 },
+      current_goal: a.current_goal,
+      thought: a.thought,
+      memories: [...a.memories],
+      journal: [...a.journal],
+      explored: true,
+      last_journal_day: state.day,
+      last_plant_time: -999,
+    });
+
+    return {
+      format: 'land66-save-v1',
+      save_version: 1,
+      name: (name ?? `Day ${state.day} (${state.clock_str})`).trim().slice(0, 64),
+      saved_at: new Date().toISOString(),
+      seed: state.seed,
+      tick: state.tick,
+      elapsed: Number(elapsed.toFixed(4)),
+      paused: state.paused,
+      speed: state.speed,
+      weather: state.weather,
+      weather_override: false,
+      blocks_placed: state.stats.blocks_placed,
+      blocks_broken: state.stats.blocks_broken,
+      entity_counter: this.entityCounter,
+      agent_counter: this.agentCounter,
+      world: {
+        seed: state.seed,
+        width: WORLD_WIDTH,
+        height: WORLD_HEIGHT,
+        depth: WORLD_DEPTH,
+        blocks: Array.from(this.blocks),
+        meta: Array.from(this.blockMeta),
+      },
+      entities: this.demoEntities.map((e) => ({ ...e })),
+      agents: state.agents?.map((a, idx) => serializeAgent(a, idx)) ?? [serializeAgent(state.npc, 0)],
+      brains: {},
+    };
+  }
+
+  public loadSave(payload: WorldSavePayload): WorldInitMessage {
+    const blocks = payload?.world?.blocks;
+    if (!Array.isArray(blocks) || blocks.length !== WORLD_VOLUME) {
+      throw new Error(`Invalid save file: expected ${WORLD_VOLUME} world blocks.`);
+    }
+    const meta = payload.world.meta;
+    if (Array.isArray(meta) && meta.length !== WORLD_VOLUME) {
+      throw new Error(`Invalid save file: expected ${WORLD_VOLUME} block_meta entries.`);
+    }
+
+    for (let i = 0; i < WORLD_VOLUME; i++) {
+      this.blocks[i] = Number(blocks[i]) & 0xff;
+      this.blockMeta[i] = Array.isArray(meta) ? Number(meta[i]) & 0xff : 0;
+    }
+
+    // Recompute surface heights and crop/tree stats from restored voxels
+    let treesCount = 0;
+    let farmPlots = 0;
+    let cropsGrowing = 0;
+    let cropsRipe = 0;
+    this.surfaceY.fill(-1);
+    for (let z = 0; z < WORLD_DEPTH; z++) {
+      for (let x = 0; x < WORLD_WIDTH; x++) {
+        for (let y = WORLD_HEIGHT - 1; y >= 0; y--) {
+          const b = this.getBlock(x, y, z);
+          if (b === BlockId.WOOD_LOG && y > 0 && this.getBlock(x, y - 1, z) !== BlockId.WOOD_LOG) {
+            treesCount += 1;
+          } else if (b === BlockId.FARMLAND) {
+            farmPlots += 1;
+          } else if (b === BlockId.CROP_WHEAT) {
+            if (this.blockMeta[blockIndex(x, y, z)] >= 3) cropsRipe += 1;
+            else cropsGrowing += 1;
+          }
+          if (
+            this.surfaceY[z * WORLD_WIDTH + x] < 0 &&
+            b !== BlockId.AIR &&
+            b !== BlockId.LEAVES &&
+            b !== BlockId.WOOD_LOG
+          ) {
+            this.surfaceY[z * WORLD_WIDTH + x] = y;
+          }
+        }
+      }
+    }
+
+    const seed = Number(payload.seed ?? payload.world.seed ?? 6601);
+    const DAY_SECONDS = 360.0;
+    const elapsed = Math.max(0, Number(payload.elapsed ?? DAY_SECONDS * 0.27));
+    const day = Math.floor(elapsed / DAY_SECONDS) + 1;
+    const timeOfDay = (elapsed % DAY_SECONDS) / DAY_SECONDS;
+    const weather =
+      payload.weather === 'rain' || payload.weather === 'storm' ? payload.weather : 'clear';
+    const rawSpeed = Number(payload.speed ?? 1);
+    const speed: SimSpeed = rawSpeed === 2 || rawSpeed === 5 ? rawSpeed : 1;
+
+    this.state = this.createInitialState(seed);
+    this.state.tick = Math.max(0, Number(payload.tick ?? 0));
+    this.state.day = day;
+    this.state.time_of_day = timeOfDay;
+    this.state.clock_str = formatClock(timeOfDay);
+    this.state.phase = phaseFromTime(timeOfDay);
+    this.state.weather = weather;
+    this.state.paused = Boolean(payload.paused ?? false);
+    this.state.speed = speed;
+    this.state.stats.trees_count = treesCount;
+    this.state.stats.farm_plots = farmPlots;
+    this.state.stats.crops_growing = cropsGrowing;
+    this.state.stats.crops_ripe = cropsRipe;
+    this.state.stats.blocks_placed = Math.max(0, Number(payload.blocks_placed ?? 0));
+    this.state.stats.blocks_broken = Math.max(0, Number(payload.blocks_broken ?? 0));
+
+    const parseVec = (raw: unknown, fallback: { x: number; y: number; z: number }) => {
+      if (Array.isArray(raw) && raw.length >= 3) {
+        return { x: Number(raw[0]), y: Number(raw[1]), z: Number(raw[2]) };
+      }
+      if (raw && typeof raw === 'object' && 'x' in raw && 'y' in raw && 'z' in raw) {
+        const obj = raw as { x: unknown; y: unknown; z: unknown };
+        return { x: Number(obj.x), y: Number(obj.y), z: Number(obj.z) };
+      }
+      return fallback;
+    };
+
+    const rawAgents = Array.isArray(payload.agents) ? (payload.agents as Array<Record<string, unknown>>) : [];
+    const restoreNpc = (src: Record<string, unknown>, base: NpcState): NpcState => {
+      const pos = parseVec(src.position, base.position);
+      const grid = parseVec(src.grid_pos, { x: Math.round(pos.x), y: Math.round(pos.y), z: Math.round(pos.z) });
+      return {
+        ...base,
+        id: String(src.id ?? base.id ?? 'aiden'),
+        name: String(src.name ?? base.name),
+        role: String(src.role ?? base.role ?? 'pioneer'),
+        variant: Number(src.variant ?? base.variant ?? 0),
+        position: pos,
+        grid_pos: grid,
+        yaw: Number(src.yaw ?? base.yaw),
+        current_goal: String(src.current_goal ?? base.current_goal),
+        thought: String(src.thought ?? base.thought),
+        needs: { ...base.needs, ...((src.needs as Record<string, number>) ?? {}) },
+        inventory: { ...base.inventory, ...((src.inventory as Record<string, number>) ?? {}) },
+        memories: Array.isArray(src.memories) ? (src.memories as NpcState['memories']) : base.memories,
+        journal: Array.isArray(src.journal) ? (src.journal as NpcState['journal']) : base.journal,
+      };
+    };
+
+    const primaryData = rawAgents.find((a) => a.id === 'aiden') ?? rawAgents[0];
+    if (primaryData) {
+      this.state.npc = restoreNpc(primaryData, this.state.npc);
+    }
+
+    this.extraAgents = [];
+    for (const a of rawAgents) {
+      const aid = String(a.id ?? '');
+      if (!aid || aid === 'aiden') continue;
+      const base = this.addAgent({ name: String(a.name ?? aid), role: (a.role as AgentRole) ?? 'pioneer' });
+      const idx = this.extraAgents.length - 1;
+      const restored = restoreNpc(a, base);
+      this.extraAgents[idx] = { ...this.extraAgents[idx], ...restored, id: aid };
+    }
+
+    this.agentCounter = Math.max(1 + this.extraAgents.length, Number(payload.agent_counter ?? 1));
+    this.demoEntities = [];
+    const rawEntities = Array.isArray(payload.entities) ? (payload.entities as Array<Record<string, unknown>>) : [];
+    for (const e of rawEntities) {
+      const pos = parseVec(e.position, { x: 15, y: 11, z: 15 });
+      const grid = parseVec(e.grid_pos, { x: Math.round(pos.x), y: Math.round(pos.y), z: Math.round(pos.z) });
+      this.demoEntities.push({
+        id: String(e.id ?? `ent-${this.demoEntities.length + 1}`),
+        kind: String(e.kind ?? 'cat') as EntityKind,
+        name: String(e.name ?? 'Friend'),
+        variant: Number(e.variant ?? 0),
+        position: pos,
+        grid_pos: grid,
+        yaw: Number(e.yaw ?? 0),
+        animation: 'idle',
+        target: null,
+        wait: 1.0,
+      });
+    }
+    this.entityCounter = Math.max(this.demoEntities.length, Number(payload.entity_counter ?? this.demoEntities.length));
+
+    return this.getInitMessage();
+  }
 }
+
+const OFFLINE_SAVES_KEY = 'land66_offline_saves_v1';
+
+interface StoredOfflineSave {
+  summary: SaveSlotSummary;
+  payload: WorldSavePayload;
+}
+
+function readOfflineStore(): Record<string, StoredOfflineSave> {
+  try {
+    const raw = window.localStorage.getItem(OFFLINE_SAVES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, StoredOfflineSave>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeOfflineStore(store: Record<string, StoredOfflineSave>): void {
+  window.localStorage.setItem(OFFLINE_SAVES_KEY, JSON.stringify(store));
+}
+
+export const offlineSaveStore = {
+  list(): SaveSlotSummary[] {
+    return Object.values(readOfflineStore())
+      .map((entry) => entry.summary)
+      .sort((a, b) => (b.saved_at || '').localeCompare(a.saved_at || ''));
+  },
+  save(name: string, payload: WorldSavePayload): SaveSlotSummary {
+    const slot = name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48);
+    if (!slot) throw new Error('Save name must contain letters or numbers.');
+    const serialized = JSON.stringify(payload);
+    const summary: SaveSlotSummary = {
+      slot,
+      name: name.trim().slice(0, 64),
+      saved_at: new Date().toISOString(),
+      day: Math.floor(payload.elapsed / 360) + 1,
+      clock_str: formatClock((payload.elapsed % 360) / 360),
+      tick: payload.tick,
+      weather: payload.weather,
+      agents_count: payload.agents.length,
+      entities_count: payload.entities?.length ?? 0,
+      seed: payload.seed,
+      size_bytes: serialized.length,
+    };
+    const store = readOfflineStore();
+    store[slot] = { summary, payload };
+    writeOfflineStore(store);
+    return summary;
+  },
+  load(slot: string): WorldSavePayload {
+    const store = readOfflineStore();
+    const item = store[slot];
+    if (!item) throw new Error(`Save slot "${slot}" not found.`);
+    return item.payload;
+  },
+  remove(slot: string): void {
+    const store = readOfflineStore();
+    delete store[slot];
+    writeOfflineStore(store);
+  },
+};

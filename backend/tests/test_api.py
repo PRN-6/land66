@@ -137,3 +137,53 @@ def test_two_clients_receive_identical_block_deltas():
             delta_a,delta_b = next_type(a,'tick_update'),next_type(b,'tick_update')
             assert delta_a['block_updates'] == delta_b['block_updates']
             assert any(p['block'] == 5 for p in delta_a['block_updates'])
+
+
+def test_save_load_download_upload_and_slots(tmp_path, monkeypatch):
+    import app.save_store as save_store
+    monkeypatch.setattr(save_store, 'SAVES_DIR', tmp_path / 'saves')
+
+    with TestClient(client_app()) as client:
+        with client.websocket_connect('/ws') as ws:
+            assert ws.receive_json()['type'] == 'world_init'
+            client.post('/api/sim/control', json={'action': 'pause'})
+            client.post('/api/llm/config', json={'provider': 'openai', 'api_key': 'sk-secret-do-not-save', 'enabled': False})
+            mira = client.post('/api/agents', json={'name': 'Mira', 'role': 'farmer'}).json()
+            client.post(f"/api/llm/config?agent_id={mira['id']}", json={'provider': 'ollama', 'model': 'qwen2.5-coder:7b', 'enabled': False})
+            client.post('/api/god/intervene', json={'action': 'spawn_entity', 'value': {'kind': 'cat', 'name': 'Luna'}})
+
+            save_res = client.post('/api/sim/saves', json={'name': 'My Island Checkpoint'})
+            assert save_res.status_code == 200
+            slot = save_res.json()['save']['slot']
+            assert slot == 'my-island-checkpoint'
+
+            listed = client.get('/api/sim/saves').json()['saves']
+            assert len(listed) == 1 and listed[0]['agents_count'] == 2 and listed[0]['entities_count'] == 1
+
+            dl = client.get('/api/sim/save')
+            assert dl.status_code == 200
+            assert 'sk-secret-do-not-save' not in dl.text
+            exported = dl.json()
+            assert exported['format'] == 'land66-save-v1'
+
+            client.post('/api/sim/control', json={'action': 'reset', 'seed': 99})
+            reset_init = next_type(ws, 'world_init')
+            assert reset_init['state']['seed'] == 99 and len(reset_init['state']['agents']) == 1
+
+            load_slot = client.post(f'/api/sim/saves/{slot}/load')
+            assert load_slot.status_code == 200
+            restored_init = next_type(ws, 'world_init')
+            assert restored_init['state']['stats']['agents_count'] == 2
+            assert restored_init['state']['entities'][0]['name'] == 'Luna'
+            mira_cfg = client.get(f"/api/llm/config?agent_id={mira['id']}").json()
+            assert mira_cfg['model'] == 'qwen2.5-coder:7b'
+
+            client.post('/api/sim/control', json={'action': 'reset', 'seed': 123})
+            next_type(ws, 'world_init')
+            upload_res = client.post('/api/sim/load', json=exported)
+            assert upload_res.status_code == 200
+            assert next_type(ws, 'world_init')['state']['stats']['agents_count'] == 2
+
+            assert client.post('/api/sim/saves', json={'name': '!!!'}).status_code == 422
+            assert client.delete(f'/api/sim/saves/{slot}').status_code == 200
+            assert client.get('/api/sim/saves').json()['saves'] == []

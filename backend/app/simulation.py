@@ -78,6 +78,24 @@ def distance(a, b) -> float:
     return math.dist(a, b)
 
 
+def _encode_pos_map(mapping: dict[Pos, float]) -> list[list]:
+    return [[x, y, z, round(float(val), 4)] for (x, y, z), val in mapping.items()]
+
+
+def _decode_pos_map(items) -> dict[Pos, float]:
+    out: dict[Pos, float] = {}
+    if isinstance(items, list):
+        for entry in items:
+            if isinstance(entry, (list, tuple)) and len(entry) == 4:
+                out[(int(entry[0]), int(entry[1]), int(entry[2]))] = float(entry[3])
+    elif isinstance(items, dict):
+        for key, val in items.items():
+            parts = str(key).split(",")
+            if len(parts) == 3:
+                out[(int(parts[0]), int(parts[1]), int(parts[2]))] = float(val)
+    return out
+
+
 @dataclass(frozen=True)
 class BlueprintBlock:
     pos: Pos
@@ -251,6 +269,68 @@ class NpcAgent:
             llm_status=dict(self.llm_status),
             tools={k:dict(durability=v,owned=self.inventory[k]) for k,v in self.household.tools.items()},
         )
+
+    def export_save(self) -> dict:
+        """Serialize individual NPC body state, needs, inventory, tools, memories and journal."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "role": self.role,
+            "variant": int(self.variant),
+            "position": [round(float(v), 4) for v in self.position],
+            "grid_pos": list(self.grid_pos),
+            "yaw": round(float(self.yaw), 4),
+            "needs": {k: round(float(v), 3) for k, v in self.needs.items()},
+            "inventory": {k: int(v) for k, v in self.inventory.items()},
+            "tools": {k: round(float(v), 3) for k, v in self.household.tools.items()},
+            "current_goal": self.current_goal,
+            "thought": self.thought,
+            "memories": [dict(m) for m in self.memories],
+            "journal": [dict(j) for j in self.journal],
+            "explored": bool(self.explored),
+            "last_journal_day": int(self.last_journal_day),
+            "last_plant_time": float(self.last_plant_time),
+        }
+
+    @classmethod
+    def from_save(cls, sim: Simulation, data: dict) -> NpcAgent:
+        """Restore an NpcAgent bound to an already-restored Simulation and HomeState."""
+        agent_id = str(data.get("id", "")).strip()
+        if not agent_id:
+            raise ValueError("Saved agent missing id")
+        raw_grid = data.get("grid_pos") or [16, 11, 20]
+        grid_pos = (int(raw_grid[0]), int(raw_grid[1]), int(raw_grid[2]))
+        agent = cls(
+            sim,
+            agent_id=agent_id,
+            name=str(data.get("name", agent_id.title()))[:32],
+            role=str(data.get("role", "pioneer")),
+            variant=int(data.get("variant", 0)),
+            start_pos=grid_pos,
+        )
+        raw_pos = data.get("position")
+        if isinstance(raw_pos, list) and len(raw_pos) == 3:
+            agent.position = [float(raw_pos[0]), float(raw_pos[1]), float(raw_pos[2])]
+        agent.yaw = float(data.get("yaw", 0.0))
+        for k, v in (data.get("needs") or {}).items():
+            if k in agent.needs:
+                agent.needs[k] = float(v)
+        for k, v in (data.get("inventory") or {}).items():
+            if k in agent.inventory:
+                agent.inventory[k] = int(v)
+        for k, v in (data.get("tools") or {}).items():
+            if k in agent.household.tools:
+                agent.household.tools[k] = float(v)
+        if "current_goal" in data:
+            agent.current_goal = str(data["current_goal"])
+        if "thought" in data:
+            agent.thought = str(data["thought"])
+        agent.memories = [dict(m) for m in (data.get("memories") or []) if isinstance(m, dict)][-18:]
+        agent.journal = [dict(j) for j in (data.get("journal") or []) if isinstance(j, dict)][-30:]
+        agent.explored = bool(data.get("explored", agent_id != "aiden"))
+        agent.last_journal_day = int(data.get("last_journal_day", 0))
+        agent.last_plant_time = float(data.get("last_plant_time", -999.0))
+        return agent
 
     def approach(self, target: Pos, reach: int = 1, exact: bool = False, avoid_target: bool = False):
         w = self.sim.world
@@ -1116,3 +1196,94 @@ class Simulation:
                 pos["y"] = round(pos["y"] + dy / dist * step_d, 4)
                 pos["z"] = round(pos["z"] + dz / dist * step_d, 4)
                 ent["animation"] = "walking"
+
+    def export_save(self) -> dict:
+        """Export the full simulation state for durable save-file persistence."""
+        return {
+            "save_version": 1,
+            "seed": int(self.seed),
+            "tick": int(self.tick),
+            "elapsed": round(float(self.elapsed), 4),
+            "paused": bool(self.paused),
+            "speed": int(self.speed),
+            "weather": self.weather,
+            "weather_override": bool(self.weather_override),
+            "blocks_placed": int(self.blocks_placed),
+            "blocks_broken": int(self.blocks_broken),
+            "last_weather_period": int(self.last_weather_period),
+            "entity_counter": int(self.entity_counter),
+            "agent_counter": int(self.agent_counter),
+            "world": self.world.export_state(),
+            "home": self.home.export_state(),
+            "crop_age": _encode_pos_map(self.crop_age),
+            "wet_age": _encode_pos_map(self.wet_age),
+            "berry_regrowth": _encode_pos_map(self.berry_regrowth),
+            "sapling_age": _encode_pos_map(self.sapling_age),
+            "entities": [
+                {
+                    **e,
+                    "position": dict(e["position"]),
+                    "grid_pos": dict(e["grid_pos"]),
+                    "target": list(e["target"]) if e.get("target") else None,
+                }
+                for e in self.entities
+            ],
+            "agents": [agent.export_save() for agent in self.agents.values()],
+        }
+
+    @classmethod
+    def from_save(cls, data: dict) -> Simulation:
+        """Restore a full Simulation instance from exported save data."""
+        if not isinstance(data, dict) or not isinstance(data.get("world"), dict):
+            raise ValueError("Invalid save file: missing world payload")
+
+        sim = cls.__new__(cls)
+        sim.seed = int(data.get("seed", 66))
+        sim.tick = max(0, int(data.get("tick", 0)))
+        sim.rng = random.Random(sim.seed + 731 + sim.tick)
+        sim.world = World.from_state(data["world"])
+        sim.elapsed = max(0.0, float(data.get("elapsed", DAY_SECONDS * 0.26)))
+        sim.paused = bool(data.get("paused", False))
+        raw_speed = int(data.get("speed", 1))
+        sim.speed = raw_speed if raw_speed in {1, 2, 5} else 1
+        raw_weather = str(data.get("weather", "clear"))
+        sim.weather = raw_weather if raw_weather in {"clear", "rain", "storm"} else "clear"
+        sim.weather_override = bool(data.get("weather_override", False))
+        sim.blueprint = house_blueprint()
+        sim.farm_sites = [(x, 10, z) for x in (19, 20) for z in range(18, 22)]
+        sim.crop_age = _decode_pos_map(data.get("crop_age", []))
+        sim.wet_age = _decode_pos_map(data.get("wet_age", []))
+        sim.berry_regrowth = _decode_pos_map(data.get("berry_regrowth", []))
+        sim.sapling_age = _decode_pos_map(data.get("sapling_age", []))
+        sim.blocks_placed = max(0, int(data.get("blocks_placed", 0)))
+        sim.blocks_broken = max(0, int(data.get("blocks_broken", 0)))
+        sim.last_weather_period = int(data.get("last_weather_period", int(sim.elapsed // 90)))
+        sim.entities = []
+        for e in data.get("entities", []):
+            if not isinstance(e, dict) or not isinstance(e.get("position"), dict) or not isinstance(e.get("grid_pos"), dict):
+                continue
+            sim.entities.append({
+                "id": str(e.get("id", f"ent-{len(sim.entities) + 1}")),
+                "kind": str(e.get("kind", "cat")),
+                "name": str(e.get("name", "Companion"))[:24],
+                "variant": int(e.get("variant", 0)),
+                "position": {k: float(e["position"][k]) for k in ("x", "y", "z")},
+                "grid_pos": {k: int(e["grid_pos"][k]) for k in ("x", "y", "z")},
+                "yaw": float(e.get("yaw", 0.0)),
+                "animation": str(e.get("animation", "idle")),
+                "target": list(e["target"]) if isinstance(e.get("target"), (list, tuple)) and len(e["target"]) == 3 else None,
+                "wait": float(e.get("wait", 1.0)),
+            })
+        sim.entity_counter = max(len(sim.entities), int(data.get("entity_counter", len(sim.entities))))
+        sim.agent_counter = max(1, int(data.get("agent_counter", 1)))
+        sim.home = HomeState.from_state(data.get("home", {}))
+        sim.agents = {}
+        for agent_data in data.get("agents", []):
+            if not isinstance(agent_data, dict):
+                continue
+            agent = NpcAgent.from_save(sim, agent_data)
+            sim.agents[agent.id] = agent
+        if "aiden" not in sim.agents:
+            raise ValueError("Invalid save file: primary islander 'aiden' missing")
+        sim.agent_counter = max(sim.agent_counter, len(sim.agents))
+        return sim

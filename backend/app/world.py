@@ -256,3 +256,83 @@ class World:
 
     def counts(self) -> Counter:
         return Counter({block: len(cells) for block, cells in self.locations.items()})
+
+    def export_state(self) -> dict:
+        """Serialize complete world grid, surface materials, decorations and resource nodes."""
+        sparse_materials = {str(idx): mat for idx, mat in enumerate(self.materials) if mat}
+        return {
+            "seed": self.seed,
+            "width": WIDTH,
+            "height": HEIGHT,
+            "depth": DEPTH,
+            "blocks": list(self.blocks),
+            "meta": list(self.meta),
+            "materials": sparse_materials,
+            "decorations": [
+                {**d, "anchor": list(d["anchor"]) if isinstance(d.get("anchor"), tuple) else d.get("anchor")}
+                for d in self.decorations
+            ],
+            "resource_nodes": {
+                k: {**node, "position": dict(node["position"])}
+                for k, node in self.resource_nodes.items()
+            },
+        }
+
+    @classmethod
+    def from_state(cls, data: dict) -> World:
+        """Restore a World directly from exported save state without re-running procedural generation."""
+        expected_len = WIDTH * HEIGHT * DEPTH
+        blocks_raw = data.get("blocks")
+        if not isinstance(blocks_raw, list) or len(blocks_raw) != expected_len:
+            raise ValueError(f"Save world blocks must have length {expected_len}")
+        meta_raw = data.get("meta")
+        if meta_raw is None:
+            meta_raw = [0] * expected_len
+        elif not isinstance(meta_raw, list) or len(meta_raw) != expected_len:
+            raise ValueError(f"Save world meta must have length {expected_len}")
+
+        w = cls.__new__(cls)
+        w.seed = int(data.get("seed", 66))
+        w.rng = random.Random(w.seed)
+        w.blocks = [int(b) if 0 <= int(b) < len(PALETTE) else AIR for b in blocks_raw]
+        w.meta = [int(m) for m in meta_raw]
+
+        w.materials = [""] * expected_len
+        raw_mats = data.get("materials")
+        if isinstance(raw_mats, dict):
+            for idx_str, mat in raw_mats.items():
+                idx = int(idx_str)
+                if 0 <= idx < expected_len and isinstance(mat, str):
+                    w.materials[idx] = mat
+        elif isinstance(raw_mats, list) and len(raw_mats) == expected_len:
+            w.materials = [str(m) if m else "" for m in raw_mats]
+
+        w.locations = {block: set() for block in PALETTE}
+        for y in range(HEIGHT):
+            for z in range(DEPTH):
+                base = y * WIDTH * DEPTH + z * WIDTH
+                for x in range(WIDTH):
+                    b = w.blocks[base + x]
+                    if b != AIR:
+                        w.locations[b].add((x, y, z))
+
+        w.decorations = []
+        for d in data.get("decorations", []):
+            if not isinstance(d, dict):
+                continue
+            item = dict(d)
+            anchor = item.get("anchor")
+            if isinstance(anchor, list) and len(anchor) == 3:
+                item["anchor"] = (int(anchor[0]), int(anchor[1]), int(anchor[2]))
+            w.decorations.append(item)
+
+        w.resource_nodes = {}
+        for k, node in (data.get("resource_nodes") or {}).items():
+            if isinstance(node, dict) and isinstance(node.get("position"), dict):
+                w.resource_nodes[str(k)] = {
+                    **node,
+                    "position": {axis: int(node["position"][axis]) for axis in ("x", "y", "z")},
+                }
+
+        w.updates = {}
+        return w

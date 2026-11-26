@@ -20,6 +20,53 @@ class HomeState:
         self.spoilage_age = 0.0
         self.fertilized_plots: set[Pos] = set()
 
+    def export_state(self) -> dict:
+        """Serialize shared household utilities, condition, installed fixtures and storage."""
+        return {
+            "condition": {k: float(v) for k, v in self.condition.items()},
+            "cleanliness": float(self.cleanliness),
+            "water": float(self.water),
+            "fuel": float(self.fuel),
+            "installed": sorted(self.installed),
+            "storage": {k: int(v) for k, v in self.storage.items()},
+            "repairs_done": int(self.repairs_done),
+            "cleanings_done": int(self.cleanings_done),
+            "fertilized": int(self.fertilized),
+            "spoilage_age": float(self.spoilage_age),
+            "fertilized_plots": [list(p) for p in sorted(self.fertilized_plots)],
+        }
+
+    @classmethod
+    def from_state(cls, data: dict) -> HomeState:
+        """Restore shared HomeState from a save payload."""
+        home = cls()
+        if not isinstance(data, dict):
+            return home
+        for k, v in (data.get("condition") or {}).items():
+            if k in home.condition:
+                home.condition[k] = float(v)
+        if "cleanliness" in data:
+            home.cleanliness = float(data["cleanliness"])
+        if "water" in data:
+            home.water = float(data["water"])
+        if "fuel" in data:
+            home.fuel = float(data["fuel"])
+        if isinstance(data.get("installed"), list):
+            home.installed = {str(x) for x in data["installed"] if str(x) in FIXTURES}
+        for k, v in (data.get("storage") or {}).items():
+            if k in home.storage:
+                home.storage[k] = int(v)
+        home.repairs_done = int(data.get("repairs_done", 0))
+        home.cleanings_done = int(data.get("cleanings_done", 0))
+        home.fertilized = int(data.get("fertilized", 0))
+        home.spoilage_age = float(data.get("spoilage_age", 0.0))
+        home.fertilized_plots = {
+            (int(p[0]), int(p[1]), int(p[2]))
+            for p in (data.get("fertilized_plots") or [])
+            if isinstance(p, (list, tuple)) and len(p) == 3
+        }
+        return home
+
 
 class AgentContext:
     """Route personal operations to the resident and world operations to the island."""
