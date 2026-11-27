@@ -116,7 +116,6 @@ class Runtime:
             )
 
     def worlds_summary(self) -> list[dict]:
-        homestead_unlocked = self.worlds["homestead"].gate_unlocked if "homestead" in self.worlds else False
         return [
             {
                 "id": wid,
@@ -124,7 +123,7 @@ class Runtime:
                 "preset": sim.biome,
                 "preset_label": WORLD_PRESETS.get(sim.biome, {}).get("label", sim.biome),
                 "seed": sim.seed,
-                "locked": wid == "market" and not homestead_unlocked,
+                "locked": False,
                 "builtin": wid in {"homestead", "market"},
                 "agents_count": len(sim.agents),
             }
@@ -259,8 +258,6 @@ class Runtime:
             raise ValueError(f"Unknown world '{target_world}'")
         if target_world == self.active_world_id:
             return self.snapshot()
-        if target_world == "market" and not self.worlds["homestead"].gate_unlocked:
-            raise PermissionError("Decipher the 3 runes and build the 7-block Sky Teleport Gate on Homestead first.")
         await self.cancel_thinking()
         src = self.sim
         dst = self.worlds[target_world]

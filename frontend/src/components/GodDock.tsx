@@ -35,6 +35,7 @@ interface GodDockProps {
   onOpenBrainForAgent: (agentId: string) => void;
   onCreateAgent: (payload: { name?: string; role: AgentRole }) => void;
   onDeleteAgent: (agentId: string) => void;
+  onSwitchWorld: (worldId: string) => void;
   onOpenCreateWorldModal: () => void;
   onGodIntervene: (
     action:
@@ -110,6 +111,7 @@ export function GodDock({
   onOpenBrainForAgent,
   onCreateAgent,
   onDeleteAgent,
+  onSwitchWorld,
   onOpenCreateWorldModal,
   onGodIntervene,
 }: GodDockProps) {
@@ -452,6 +454,32 @@ export function GodDock({
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
+          </div>
+
+          <div className="flex flex-wrap gap-1">
+            {(
+              state.worlds && state.worlds.length > 0
+                ? state.worlds
+                : [
+                    { id: 'homestead', name: 'Homestead', preset: 'homestead' },
+                    { id: 'market', name: 'Market', preset: 'market' },
+                  ]
+            ).map((w) => {
+              const isActive = (state.world_id ?? 'homestead') === w.id;
+              return (
+                <button
+                  key={w.id}
+                  onClick={() => onSwitchWorld(w.id)}
+                  className={`px-2.5 py-1 rounded-full border text-[10px] transition cursor-pointer ${
+                    isActive
+                      ? 'bg-white text-neutral-950 border-white font-semibold'
+                      : 'bg-neutral-900 border-white/10 text-neutral-300 hover:text-white hover:border-white/25'
+                  }`}
+                >
+                  {w.name}
+                </button>
+              );
+            })}
           </div>
 
           <div className="grid grid-cols-4 gap-1">

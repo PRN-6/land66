@@ -489,10 +489,6 @@ export function App() {
   const handleSwitchWorld = useCallback(
     async (world: FloatingWorldId) => {
       try {
-        if (world === 'market' && !(worldState.gate?.unlocked ?? false)) {
-          setGateModalOpen(true);
-          return;
-        }
         if (connectionModeRef.current === 'live') {
           await backendApi.switchWorld(world);
         } else {
@@ -505,14 +501,10 @@ export function App() {
         setInspectTarget(null);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Failed to switch world';
-        if (msg.includes('403') || msg.toLowerCase().includes('gate')) {
-          setGateModalOpen(true);
-        } else {
-          notifyError(msg);
-        }
+        notifyError(msg);
       }
     },
-    [notifyError, worldState.gate?.unlocked],
+    [notifyError],
   );
 
   const handleCreateWorld = useCallback(
@@ -777,6 +769,7 @@ export function App() {
         onOpenBrainForAgent={handleOpenBrainForAgent}
         onCreateAgent={handleCreateAgent}
         onDeleteAgent={handleDeleteAgent}
+        onSwitchWorld={handleSwitchWorld}
         onOpenCreateWorldModal={() => setCreateWorldModalOpen(true)}
         onGodIntervene={handleGodIntervene}
       />

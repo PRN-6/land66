@@ -5,7 +5,6 @@ import {
   CloudRain,
   Compass,
   Eye,
-  Lock,
   MessageSquare,
   PanelRight,
   Pause,
@@ -119,29 +118,21 @@ export function TopBar({
             ? state.worlds
             : [
                 { id: 'homestead', name: 'Homestead', preset: 'homestead', seed: state.seed, locked: false },
-                {
-                  id: 'market',
-                  name: 'Market',
-                  preset: 'market',
-                  seed: state.seed + 100,
-                  locked: !(state.gate?.unlocked ?? false),
-                },
+                { id: 'market', name: 'Market', preset: 'market', seed: state.seed + 100, locked: false },
               ]
         ).map((w) => {
           const active = (state.world_id ?? 'homestead') === w.id;
-          const locked = Boolean(w.locked ?? (w.id === 'market' && !(state.gate?.unlocked ?? false)));
           return (
             <button
               key={w.id}
-              onClick={() => (locked ? onOpenGateModal() : onSwitchWorld(w.id))}
-              title={locked ? 'Build Sky Teleport Gate to unlock Market' : `${w.name} (${w.preset})`}
+              onClick={() => onSwitchWorld(w.id)}
+              title={`Visit & maintain ${w.name} (${w.preset})`}
               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] transition cursor-pointer max-w-[7.5rem] truncate ${
                 active
                   ? 'bg-white text-neutral-950 font-medium'
                   : 'text-neutral-400 hover:text-white hover:bg-white/10'
               }`}
             >
-              {locked && <Lock className="w-2.5 h-2.5 shrink-0" />}
               <span className="truncate">{w.name}</span>
             </button>
           );
@@ -149,11 +140,11 @@ export function TopBar({
 
         <button
           onClick={onOpenCreateWorldModal}
-          title="Create New Floating World"
+          title="View All Worlds & Create New Floating World"
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] text-neutral-200 bg-white/10 hover:bg-white hover:text-neutral-950 transition cursor-pointer"
         >
           <Plus className="w-3 h-3" />
-          <span className="hidden lg:inline">New World</span>
+          <span className="hidden lg:inline">Worlds</span>
         </button>
 
         <button

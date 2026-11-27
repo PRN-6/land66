@@ -62,7 +62,13 @@ export function CreateWorldModal({
 
   if (!open) return null;
 
-  const customWorlds = worlds.filter((w) => !w.builtin && w.id !== 'homestead' && w.id !== 'market');
+  const visibleWorlds: WorldSummary[] =
+    worlds.length > 0
+      ? worlds
+      : [
+          { id: 'homestead', name: 'Homestead', preset: 'homestead', preset_label: 'Lush Island', seed: 66, builtin: true },
+          { id: 'market', name: 'Market', preset: 'market', preset_label: 'Sky Market Bazaar', seed: 166, builtin: true },
+        ];
 
   const handleSubmit = async () => {
     setError(null);
@@ -98,9 +104,9 @@ export function CreateWorldModal({
           <div className="flex items-center gap-2">
             <Globe className="w-4 h-4 text-neutral-200" />
             <div>
-              <h2 className="text-sm font-semibold text-white">Create Floating World</h2>
+              <h2 className="text-sm font-semibold text-white">Worlds & Realms Maintainer</h2>
               <p className="text-[11px] text-neutral-400">
-                Directly conjure a new realm with its own terrain, resources, and AI inhabitants
+                Switch directly to any floating world to maintain it, or conjure a brand-new realm
               </p>
             </div>
           </div>
@@ -113,8 +119,65 @@ export function CreateWorldModal({
         </div>
 
         <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto hud-scroll">
+          {/* Existing Floating Worlds */}
+          <div className="space-y-1.5">
+            <label className="text-[10px] uppercase tracking-wider text-neutral-400">
+              Existing Worlds ({visibleWorlds.length}) · Click to Enter & Maintain
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              {visibleWorlds.map((w) => {
+                const isActive = w.id === activeWorldId;
+                const isBuiltin = Boolean(w.builtin || w.id === 'homestead' || w.id === 'market');
+                return (
+                  <div
+                    key={w.id}
+                    className={`flex items-center justify-between gap-2 px-3 py-2 rounded-xl border ${
+                      isActive
+                        ? 'bg-white text-neutral-950 border-white'
+                        : 'bg-neutral-900/75 border-white/10 text-neutral-200 hover:border-white/25'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSwitchWorld(w.id);
+                        onClose();
+                      }}
+                      className="min-w-0 flex-1 text-left cursor-pointer"
+                    >
+                      <div className="text-xs font-semibold truncate">
+                        {w.name}{' '}
+                        {isActive && (
+                          <span className="text-[10px] font-normal opacity-75">· Active</span>
+                        )}
+                      </div>
+                      <div className={`text-[10px] font-mono truncate ${isActive ? 'text-neutral-700' : 'text-neutral-400'}`}>
+                        {w.preset_label ?? w.preset} · Seed {w.seed}
+                      </div>
+                    </button>
+                    {!isBuiltin && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const err = await onDeleteWorld(w.id);
+                          if (err) setError(err);
+                        }}
+                        title={`Delete ${w.name}`}
+                        className={`p-1 rounded-lg cursor-pointer ${
+                          isActive ? 'text-neutral-700 hover:bg-black/10' : 'text-neutral-500 hover:text-white hover:bg-white/10'
+                        }`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           {/* World Name & Seed */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          <div className="pt-2 border-t border-white/10 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             <div className="sm:col-span-2 space-y-1">
               <label className="text-[10px] uppercase tracking-wider text-neutral-400">World Name</label>
               <input
@@ -220,54 +283,6 @@ export function CreateWorldModal({
           {error && (
             <div className="px-3 py-2 rounded-xl bg-neutral-900 border border-white/20 text-[11px] text-neutral-200">
               {error}
-            </div>
-          )}
-
-          {/* Custom Realms List */}
-          {customWorlds.length > 0 && (
-            <div className="pt-2 border-t border-white/10 space-y-1.5">
-              <div className="text-[10px] uppercase tracking-wider text-neutral-400">
-                Created Realms ({customWorlds.length})
-              </div>
-              <div className="space-y-1">
-                {customWorlds.map((w) => {
-                  const isActive = w.id === activeWorldId;
-                  return (
-                    <div
-                      key={w.id}
-                      className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-neutral-900/70 border border-white/10"
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onSwitchWorld(w.id);
-                          onClose();
-                        }}
-                        className="min-w-0 flex-1 text-left cursor-pointer"
-                      >
-                        <div className="text-xs font-medium text-white truncate">
-                          {w.name}{' '}
-                          {isActive && <span className="text-[10px] text-neutral-400 font-normal">· Active</span>}
-                        </div>
-                        <div className="text-[10px] font-mono text-neutral-400 truncate">
-                          {w.preset_label ?? w.preset} · Seed {w.seed}
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const err = await onDeleteWorld(w.id);
-                          if (err) setError(err);
-                        }}
-                        title={`Delete ${w.name}`}
-                        className="p-1.5 rounded-lg text-neutral-500 hover:text-white hover:bg-white/10 cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
             </div>
           )}
         </div>

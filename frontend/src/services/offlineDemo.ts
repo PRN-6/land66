@@ -384,21 +384,6 @@ export class OfflineDemoSimulator {
   }
 
   public worldsSummary(): WorldSummary[] {
-    const homeLocked = this.activeWorldId === 'homestead'
-      ? !this.getGateState().unlocked
-      : !(
-          this.gateClues.anchor &&
-          this.gateClues.conduit &&
-          this.gateClues.core &&
-          (() => {
-            const hc = this.cachedWorlds.homestead;
-            if (!hc) return true;
-            return DEMO_GATE_ARCH.every((p) => {
-              const idx = blockIndex(p.x, p.y, p.z);
-              return hc.blocks[idx] === BlockId.STONE && hc.blockMaterials[idx] === p.surface;
-            });
-          })()
-        );
     return this.worldRegistry.map((w) => ({
       id: w.id,
       name: w.name,
@@ -406,7 +391,7 @@ export class OfflineDemoSimulator {
       preset_label: DEMO_PRESET_LABELS[w.preset] ?? w.preset,
       seed: w.seed,
       builtin: w.builtin,
-      locked: w.id === 'market' ? homeLocked : false,
+      locked: false,
     }));
   }
 
@@ -769,9 +754,6 @@ export class OfflineDemoSimulator {
     const targetMeta = this.worldRegistry.find((w) => w.id === target);
     if (!targetMeta) {
       throw new Error(`Unknown world "${target}".`);
-    }
-    if (target === 'market' && this.activeWorldId === 'homestead' && !this.getGateState().unlocked) {
-      throw new Error('Decipher and build the Sky Teleport Gate on Homestead Island first.');
     }
     const prevCoins = this.state.coins ?? 250;
     const prevInv = { ...this.state.npc.inventory };

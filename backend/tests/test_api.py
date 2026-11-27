@@ -225,9 +225,15 @@ def test_switch_to_market_world_and_buy_sell():
             assert init_home['state']['coins'] == 250
             assert init_home['state']['gate']['unlocked'] is False
 
-            # Cannot travel to Sky Market until the Teleport Gate is deciphered and built
-            locked_res = client.post('/api/world/switch', json={'world': 'market'})
-            assert locked_res.status_code == 403
+            # God can visit and maintain Sky Market directly even before NPCs finish the Homestead Teleport Gate
+            sw_direct = client.post('/api/world/switch', json={'world': 'market'})
+            assert sw_direct.status_code == 200
+            init_market_direct = next_type(ws, 'world_init')
+            assert init_market_direct['state']['world_id'] == 'market'
+
+            back_home = client.post('/api/world/switch', json={'world': 'homestead'})
+            assert back_home.status_code == 200
+            assert next_type(ws, 'world_init')['state']['world_id'] == 'homestead'
 
             # Solve the 3 gate blueprint clues
             assert not client.post('/api/gate/decipher', json={'rune': 'anchor', 'answer': 'granite'}).json()['correct']
@@ -322,8 +328,9 @@ def test_god_directly_create_switch_and_delete_world():
             assert init_msg['type'] == 'world_init'
             assert len(init_msg['state']['worlds']) == 2
 
-            # Built-in Market stays locked until Teleport Gate unlocked, whereas God can create any realm directly
-            assert client.post('/api/world/switch', json={'world': 'market'}).status_code == 403
+            # God can visit Market directly or create any realm directly
+            assert client.post('/api/world/switch', json={'world': 'market'}).status_code == 200
+            assert next_type(ws, 'world_init')['state']['world_id'] == 'market'
 
             created = client.post('/api/world/create', json={
                 'name': 'Emerald Peaks',
