@@ -292,7 +292,8 @@ export function GodDock({
                       </span>
                     </div>
                     <div className="text-[10px] font-mono text-neutral-400 truncate">
-                      Brain: {brainName} · {ag.current_action}
+                      Brain: {brainName}
+                      {ag.llm_status?.locked ? ' [Fixed]' : ''} · {ag.current_action}
                     </div>
                   </button>
 

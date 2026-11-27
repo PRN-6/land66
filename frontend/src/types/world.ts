@@ -219,6 +219,7 @@ export interface LlmStatus {
   calls_count: number;
   fallback_active: boolean;
   last_error: string | null;
+  locked?: boolean;
 }
 
 export type FloatingWorldId = string;
@@ -374,6 +375,7 @@ export interface LlmConfig {
   temperature: number;
   decision_interval_ticks: number;
   enabled: boolean;
+  locked?: boolean;
 }
 
 export interface LlmTestResponse {

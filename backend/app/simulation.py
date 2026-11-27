@@ -221,7 +221,7 @@ class NpcAgent:
         self.under_attack_until: float = 0.0
         self.llm_status = dict(
             provider="fallback", model="", thinking=False, last_latency_ms=0,
-            calls_count=0, fallback_active=True, last_error=None,
+            calls_count=0, fallback_active=True, last_error=None, locked=False,
         )
         self.remember(
             "Woke on a floating island with empty pockets."

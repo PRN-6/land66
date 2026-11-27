@@ -1,4 +1,4 @@
-import { Brain, Plus } from 'lucide-react';
+import { Brain, Lock, Plus } from 'lucide-react';
 import type { NpcState } from '../types/world';
 
 interface AgentBarProps {
@@ -76,13 +76,14 @@ export function AgentBar({
 
             <button
               onClick={() => onOpenBrainForAgent(aid)}
-              title={`Manage ${ag.name}'s Brain (${brainLabel})`}
-              className={`p-1 rounded-lg transition cursor-pointer shrink-0 ${
+              title={`Manage ${ag.name}'s Brain (${brainLabel}${ag.llm_status?.locked ? ' · fixed' : ''})`}
+              className={`inline-flex items-center gap-0.5 p-1 rounded-lg transition cursor-pointer shrink-0 ${
                 selected
                   ? 'hover:bg-neutral-200 text-neutral-800'
                   : 'hover:bg-white/10 text-neutral-400 hover:text-white'
               }`}
             >
+              {ag.llm_status?.locked && <Lock className="w-2.5 h-2.5" />}
               <Brain className="w-3.5 h-3.5" />
             </button>
           </div>

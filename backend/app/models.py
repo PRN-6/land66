@@ -22,6 +22,7 @@ class LLMConfig(BaseModel):
     temperature: float = Field(default=.7, ge=0, le=2)
     decision_interval_ticks: int = Field(default=100, ge=10, le=10000)
     enabled: bool = False
+    locked: bool = False
 
     @field_validator("base_url")
     @classmethod
@@ -57,6 +58,7 @@ class ConfigPatch(BaseModel):
     temperature: float | None = None
     decision_interval_ticks: int | None = None
     enabled: bool | None = None
+    locked: bool | None = None
 
 
 Action = Literal[

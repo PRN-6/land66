@@ -117,6 +117,7 @@ class Runtime:
                 calls_count=b.calls_count,
                 fallback_active=b.fallback_active,
                 last_error=b.last_error,
+                locked=b.config.locked,
             )
 
     def worlds_summary(self) -> list[dict]:
@@ -207,7 +208,7 @@ class Runtime:
                 if isinstance(cfg, dict):
                     patch = {
                         k: cfg[k]
-                        for k in ("provider", "model", "base_url", "temperature", "decision_interval_ticks", "enabled")
+                        for k in ("provider", "model", "base_url", "temperature", "decision_interval_ticks", "enabled", "locked")
                         if k in cfg and cfg[k] is not None
                     }
                     try:
@@ -395,7 +396,7 @@ class Runtime:
             if isinstance(saved_cfg, dict):
                 patch = {
                     k: saved_cfg[k]
-                    for k in ("provider", "model", "base_url", "temperature", "decision_interval_ticks", "enabled")
+                    for k in ("provider", "model", "base_url", "temperature", "decision_interval_ticks", "enabled", "locked")
                     if k in saved_cfg and saved_cfg[k] is not None
                 }
                 prev = old_brains.get(agent_id)
@@ -543,6 +544,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None, persist: boo
                 raise HTTPException(422, "Invalid initial llm_config for agent")
         rt.brains[agent.id] = new_brain
         rt.next_think_ticks[agent.id] = rt.sim.tick
+        rt.save_autosave()
         rt.broadcast_tick()
         return {**agent.snapshot(), "llm_config": new_brain.config.public()}
 
@@ -557,8 +559,13 @@ def create_app(seed: int | None = None, brain: Brain | None = None, persist: boo
         rt.sim.remove_agent(agent_id)
         rt.brains.pop(agent_id, None)
         rt.next_think_ticks.pop(agent_id, None)
+        rt.save_autosave()
         rt.broadcast_tick()
         return {"ok": True, "removed": agent_id}
+
+    def _is_fixed_brain(brain: Brain) -> bool:
+        """Return True when an NPC's AI assignment should be protected from bulk overrides."""
+        return bool(brain.config.locked or (brain.config.provider != "fallback" and brain.config.enabled))
 
     @app.get("/api/llm/config")
     async def config(agent_id: str | None = Query(default=None)):
@@ -569,14 +576,30 @@ def create_app(seed: int | None = None, brain: Brain | None = None, persist: boo
         rt = runtime()
         aid = agent_id or rt.sim.primary_id
         b = rt.get_brain(aid)
+        data = patch.model_dump(exclude_none=True)
+        if b.config.locked and patch.locked is not False:
+            protected_changes = [
+                field
+                for field in ("provider", "model", "base_url", "enabled")
+                if field in data and data[field] != getattr(b.config, field)
+            ]
+            if protected_changes:
+                agent = rt.sim.agents.get(aid)
+                who = agent.name if agent else aid
+                fixed_label = b.config.model or b.config.provider
+                raise HTTPException(
+                    409,
+                    f"{who} is fixed to {b.config.provider} ({fixed_label}). Unlock it first to change.",
+                )
         try:
-            b.configure(patch.model_dump(exclude_none=True))
+            b.configure(data)
         except (ValueError, ValidationError):
             raise HTTPException(422, "Invalid LLM configuration; check provider, URL and numeric ranges")
         await rt.cancel_thinking(aid)
         b.fallback_active = not b.configured()
         b.last_error = None
         rt.next_think_ticks[aid] = rt.sim.tick
+        rt.save_autosave()
         rt.broadcast_tick()
         return b.config.public()
 
@@ -584,17 +607,26 @@ def create_app(seed: int | None = None, brain: Brain | None = None, persist: boo
     async def configure_all(patch: ConfigPatch):
         rt = runtime()
         data = patch.model_dump(exclude_none=True)
+        try:
+            Brain(timeout=rt.default_timeout).configure(data)
+        except (ValueError, ValidationError):
+            raise HTTPException(422, "Invalid LLM configuration; check provider, URL and numeric ranges")
+        updated = 0
+        skipped: list[str] = []
         for aid, b in list(rt.brains.items()):
-            try:
-                b.configure(data)
-            except (ValueError, ValidationError):
-                raise HTTPException(422, "Invalid LLM configuration; check provider, URL and numeric ranges")
+            if _is_fixed_brain(b):
+                agent = rt.sim.agents.get(aid)
+                skipped.append(agent.name if agent else aid)
+                continue
+            b.configure(data)
             await rt.cancel_thinking(aid)
             b.fallback_active = not b.configured()
             b.last_error = None
             rt.next_think_ticks[aid] = rt.sim.tick
+            updated += 1
+        rt.save_autosave()
         rt.broadcast_tick()
-        return {"ok": True, "count": len(rt.brains)}
+        return {"ok": True, "count": updated, "skipped": skipped}
 
     @app.post("/api/llm/test")
     async def test_llm(patch: ConfigPatch | None = Body(default=None), agent_id: str | None = Query(default=None)):

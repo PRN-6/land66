@@ -143,7 +143,7 @@ export const backendApi = {
     });
   },
 
-  applyLlmToAll(config: Partial<LlmConfig>): Promise<{ ok: boolean; count: number }> {
+  applyLlmToAll(config: Partial<LlmConfig>): Promise<{ ok: boolean; count: number; skipped?: string[] }> {
     return requestJson('/api/llm/apply_all', {
       method: 'POST',
       body: JSON.stringify(config),

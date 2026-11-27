@@ -410,3 +410,77 @@ def test_runtime_autosave_persists_across_restart(tmp_path, monkeypatch):
         sw = client2.post('/api/world/switch', json={'world': 'homestead'})
         assert sw.status_code == 200
         assert sw.json()['state']['tick'] >= 1
+
+
+def test_fixed_npc_ai_preserved_across_apply_all_lock_and_reload(tmp_path, monkeypatch):
+    import app.save_store as save_store
+    monkeypatch.setattr(save_store, 'SAVES_DIR', tmp_path / 'saves')
+
+    with TestClient(create_app(seed=66, brain=Brain(LLMConfig()), persist=True)) as client:
+        # Fix Aiden to Ollama + qwen2.5-coder:7b with lock enabled
+        res = client.post(
+            '/api/llm/config?agent_id=aiden',
+            json={
+                'provider': 'ollama',
+                'base_url': 'http://localhost:11434',
+                'model': 'qwen2.5-coder:7b',
+                'enabled': True,
+                'locked': True,
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()['locked'] is True
+        assert res.json()['provider'] == 'ollama'
+        assert res.json()['model'] == 'qwen2.5-coder:7b'
+
+        # Add Elena on fallback, and Marcus already set to lmstudio (active even without explicit locked flag)
+        elena = client.post('/api/agents', json={'name': 'Elena', 'role': 'farmer'}).json()
+        marcus = client.post(
+            '/api/agents',
+            json={
+                'name': 'Marcus',
+                'role': 'builder',
+                'llm_config': {
+                    'provider': 'lmstudio',
+                    'base_url': 'http://localhost:1234/v1',
+                    'model': 'mistral-local',
+                    'enabled': True,
+                },
+            },
+        ).json()
+
+        # Bulk apply only updates unassigned/fallback NPC (Elena); keeps Aiden & Marcus untouched
+        bulk = client.post(
+            '/api/llm/apply_all',
+            json={
+                'provider': 'custom',
+                'base_url': 'http://localhost:8080/v1',
+                'model': 'shared-fallback-override',
+                'enabled': True,
+            },
+        )
+        assert bulk.status_code == 200
+        assert bulk.json()['count'] == 1
+        assert set(bulk.json()['skipped']) == {'Aiden', 'Marcus'}
+
+        assert client.get('/api/llm/config?agent_id=aiden').json()['model'] == 'qwen2.5-coder:7b'
+        assert client.get(f"/api/llm/config?agent_id={marcus['id']}").json()['model'] == 'mistral-local'
+        assert client.get(f"/api/llm/config?agent_id={elena['id']}").json()['model'] == 'shared-fallback-override'
+
+        # Locked NPC rejects direct provider/model switch without unlocking first
+        rejected = client.post('/api/llm/config?agent_id=aiden', json={'provider': 'fallback'})
+        assert rejected.status_code == 409
+        assert client.get('/api/llm/config?agent_id=aiden').json()['provider'] == 'ollama'
+
+    # Restarting runtime restores Aiden's fixed Ollama model & lock from autosave
+    with TestClient(create_app(seed=66, brain=Brain(LLMConfig()), persist=True)) as client2:
+        cfg = client2.get('/api/llm/config?agent_id=aiden').json()
+        assert cfg['provider'] == 'ollama'
+        assert cfg['model'] == 'qwen2.5-coder:7b'
+        assert cfg['locked'] is True
+
+        # Explicit unlock allows switching afterwards
+        unlocked = client2.post('/api/llm/config?agent_id=aiden', json={'locked': False})
+        assert unlocked.status_code == 200 and unlocked.json()['locked'] is False
+        changed = client2.post('/api/llm/config?agent_id=aiden', json={'provider': 'fallback', 'enabled': False})
+        assert changed.status_code == 200 and changed.json()['provider'] == 'fallback'
