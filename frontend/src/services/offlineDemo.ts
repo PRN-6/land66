@@ -1725,6 +1725,7 @@ export class OfflineDemoSimulator {
       const dz = target.position.z - f.position.z;
       const d = Math.hypot(dx, dz);
       f.yaw = Math.atan2(dx, dz);
+      f.path = [];
       const weapon =
         (f.inventory.iron_sword ?? 0) > 0
           ? 'iron_sword'
@@ -1770,8 +1771,14 @@ export class OfflineDemoSimulator {
           }
           f.hostile_target = null;
           f.threatened_by = null;
+          f.animation = 'idle';
+          f.current_action = 'idle';
           if (tid !== 'aiden') {
             this.extraAgents = this.extraAgents.filter((a) => a.id !== tid);
+            for (const peer of [this.state.npc, ...this.extraAgents]) {
+              if (peer.hostile_target === tid) peer.hostile_target = null;
+              if (peer.threatened_by === tid) peer.threatened_by = null;
+            }
             f.thought = `Defeated ${target.name} in combat.`;
           } else {
             target.needs.health = 25;
@@ -1921,10 +1928,32 @@ export class OfflineDemoSimulator {
       const low = msg.toLowerCase();
       const allNpcs: NpcState[] = [this.state.npc, ...this.extraAgents];
       const stop = ['stop fighting', 'peace', 'cease', 'stand down', 'calm'].some((k) => low.includes(k));
-      const killIntent = ['kill', 'attack', 'fight', 'slay', 'defeat'].some((k) => low.includes(k));
-      const namedTarget = allNpcs.find((p) => low.includes(p.name.toLowerCase()));
-      const recipients =
+      const attackVerbs = ['kill', 'attack', 'fight', 'slay', 'defeat', 'eliminate', 'strike'];
+      const verbPositions = attackVerbs.map((v) => low.indexOf(v)).filter((i) => i >= 0);
+      const verbPos = verbPositions.length > 0 ? Math.min(...verbPositions) : -1;
+      const killIntent = verbPos >= 0;
+
+      let recipients: NpcState[] =
         agentId === 'all' ? allNpcs : targetAgent ? [targetAgent] : [this.state.npc];
+      if (killIntent && agentId === 'all' && verbPos > 0) {
+        const pre = low.slice(0, verbPos);
+        const namedAttackers = allNpcs.filter((p) => pre.includes(p.name.toLowerCase()));
+        if (namedAttackers.length > 0) recipients = namedAttackers;
+      }
+
+      const pickPreyFor = (agId: string): NpcState | undefined => {
+        const peers = allNpcs.filter((p, idx) => (p.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`)) !== agId);
+        if (verbPos >= 0) {
+          const post = low.slice(verbPos);
+          const after = peers.filter((p) => post.includes(p.name.toLowerCase()));
+          if (after.length > 0) {
+            after.sort((a, b) => post.indexOf(a.name.toLowerCase()) - post.indexOf(b.name.toLowerCase()));
+            return after[0];
+          }
+        }
+        return peers.find((p) => low.includes(p.name.toLowerCase())) ?? (peers.length === 1 ? peers[0] : undefined);
+      };
+
       for (const ag of recipients) {
         const agId = ag.id ?? 'aiden';
         ag.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: `Whisper: "${msg}"` });
@@ -1934,13 +1963,20 @@ export class OfflineDemoSimulator {
           ag.current_action = 'idle';
           ag.animation = 'idle';
           ag.thought = 'Standing down as instructed.';
-        } else if (killIntent && namedTarget && (namedTarget.id ?? 'aiden') !== agId) {
-          ag.hostile_target = namedTarget.id ?? 'aiden';
-          ag.current_action = 'attack';
-          ag.animation = 'hunting';
-          ag.thought = `Understood. Moving to attack ${namedTarget.name}!`;
-          namedTarget.threatened_by = agId;
-          namedTarget.thought = `${ag.name} is attacking me! Defending myself!`;
+        } else if (killIntent) {
+          const namedTarget = pickPreyFor(agId);
+          if (namedTarget && (namedTarget.id ?? 'aiden') !== agId) {
+            ag.hostile_target = namedTarget.id ?? 'aiden';
+            ag.current_action = 'attack';
+            ag.animation = 'hunting';
+            ag.thought = `Understood. Moving to attack ${namedTarget.name}!`;
+            namedTarget.threatened_by = agId;
+            namedTarget.current_action = 'attack';
+            namedTarget.animation = 'hunting';
+            namedTarget.thought = `${ag.name} is attacking me! Defending myself!`;
+          } else {
+            ag.thought = `I heard a whisper: "${msg}"`;
+          }
         } else {
           ag.thought = `I heard a whisper: "${msg}"`;
         }

@@ -364,3 +364,33 @@ def test_npc_attack_instruction_and_self_defense():
             break
     assert marcus.id not in s.agents
     assert Decision(thought='Defend self', goal='Fight', action='attack', params={'target_name': 'Elena'}).action == 'attack'
+
+
+def test_whisper_named_attacker_and_defense_priority_over_chores():
+    s = Simulation(seed=66)
+    elena = s.add_agent(name='Elena', role='builder')
+    rowan = s.add_agent(name='Rowan', role='explorer')
+    elena.grid_pos = (16, 11, 19)
+    elena.position = [16.0, 11.0, 19.0]
+    rowan.grid_pos = (16, 11, 18)
+    rowan.position = [16.0, 11.0, 18.0]
+
+    # Dry-run can_start('attack') must NOT trigger false self-defense on the target
+    assert s.primary.can_start('attack', {'target_id': elena.id})
+    assert elena.threatened_by is None
+
+    # Whispering "Aiden go kill Elena" to aiden still resolves Elena even though "Aiden" comes first
+    s.intervene('whisper', 'Aiden go kill Elena', agent_id='aiden')
+    assert s.primary.hostile_target == elena.id
+    assert elena.threatened_by == 'aiden'
+    s.intervene('whisper', 'stop fighting', agent_id='all')
+    assert s.primary.hostile_target is None and elena.threatened_by is None
+
+    # Whispering "Elena kill Rowan" to 'all' scopes attack to Elena and triggers Rowan's self-defense even when thirsty
+    rowan.needs['thirst'] = 20.0
+    rowan.start_action('eat')  # even mid-meal, under attack interrupts to defend self
+    s.intervene('whisper', 'Elena kill Rowan', agent_id='all')
+    assert elena.hostile_target == rowan.id
+    assert s.primary.hostile_target is None
+    assert rowan.threatened_by == elena.id
+    assert rowan.current_action == 'attack'

@@ -336,11 +336,7 @@ class Runtime:
                 continue
             decision, trace = task.result()
             if decision is not None:
-                saved = (agent.job, agent.current_action, agent.target, agent.path, agent.progress, agent.animation)
-                try:
-                    valid = agent.start_action(decision.action, decision.params)
-                finally:
-                    agent.job, agent.current_action, agent.target, agent.path, agent.progress, agent.animation = saved
+                valid = agent.can_start(decision.action, decision.params)
                 if valid:
                     agent.queued_decision = decision
                 else:

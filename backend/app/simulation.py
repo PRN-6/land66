@@ -482,13 +482,15 @@ class NpcAgent:
             path = self.approach(target_agent.grid_pos, reach=reach_atk, avoid_target=False)
             if path is None:
                 return False
-            # Alert target immediately so they can defend themselves!
+            if params.get("_dry_run"):
+                return True
+            # Alert target immediately so they interrupt non-combat work and defend themselves
             target_agent.threatened_by = self.id
             target_agent.under_attack_until = self.sim.elapsed + 25.0
             if target_agent.current_action != "attack" or not target_agent.job or target_agent.job["params"].get("target_id") != self.id:
                 target_agent.thought = f"{self.name} is coming for me! I will defend myself!"
                 target_agent.remember(f"{self.name} threatened me; preparing to fight back.")
-                if target_agent.current_action in {"idle", "walk", "explore", "chop", "mine", "build", "till", "plant", "water", "harvest", "forage", "journal"} or not target_agent.job:
+                if target_agent.current_action != "attack" or not target_agent.job:
                     target_agent.job = None
                     target_agent.defend_against(self.id)
             return self.make_job("attack", target_agent.grid_pos, path, target_id=target_agent.id, weapon=weapon)
@@ -588,7 +590,8 @@ class NpcAgent:
         saved = (self.job,self.current_action,self.target,self.path,self.progress,self.animation)
         rng_state = self.sim.rng.getstate()
         try:
-            return bool(self.start_action(action,params))
+            test_params = {**params, "_dry_run": True} if action == "attack" else params
+            return bool(self.start_action(action, test_params))
         finally:
             self.job,self.current_action,self.target,self.path,self.progress,self.animation = saved
             self.sim.rng.setstate(rng_state)
@@ -610,6 +613,22 @@ class NpcAgent:
     def choose_fallback(self):
         n, inv = self.needs, self.inventory
         sim = self.sim
+        # Self-defense and explicit combat orders take priority over chores & queued LLM actions
+        if self.threatened_by and self.sim.elapsed < self.under_attack_until:
+            attacker = sim.agents.get(self.threatened_by)
+            if attacker and attacker.id != self.id:
+                if self.defend_against(attacker.id):
+                    self.current_goal = f"Defend myself against {attacker.name}"
+                    return
+            else:
+                self.threatened_by = None
+        if self.hostile_target:
+            target = sim.agents.get(self.hostile_target)
+            if target and target.id != self.id and self.start_action("attack", {"target_id": target.id}):
+                self.current_goal = f"Attack {target.name}"
+                return
+            if not target:
+                self.hostile_target = None
         if n["thirst"] < 42 and self.choose("drink", "My mouth feels dry. The pond is fresh and close enough to reach.", "Stay hydrated"):
             return
         if n["hunger"] < 48:
@@ -632,23 +651,6 @@ class NpcAgent:
             if self.apply_decision(decision):
                 return
             self.remember("I reconsidered an idea that was no longer possible.")
-        # Self-defense priority when under attack
-        if self.threatened_by and self.sim.elapsed < self.under_attack_until:
-            attacker = sim.agents.get(self.threatened_by)
-            if attacker:
-                if self.defend_against(attacker.id):
-                    self.current_goal = f"Defend myself against {attacker.name}"
-                    return
-            else:
-                self.threatened_by = None
-        # Continue instructed combat target until defeated or calmed
-        if self.hostile_target:
-            target = sim.agents.get(self.hostile_target)
-            if target and self.start_action("attack", {"target_id": target.id}):
-                self.current_goal = f"Attack {target.name}"
-                return
-            if not target:
-                self.hostile_target = None
         if sim.biome == "market":
             spots = [(16, 11, 19), (9, 11, 11), (22, 11, 11), (22, 11, 18), (13, 11, 16)]
             target_spot = spots[(sim.tick // 80 + self.variant) % len(spots)]
@@ -1411,11 +1413,29 @@ class Simulation:
             targets = list(self.agents.values()) if agent_id == "all" else [self._resolve_agent(agent_id)]
             low = value.lower()
             stop_fight = any(w in low for w in ("stop fighting", "cease", "peace", "stand down", "calm down"))
-            attack_intent = any(w in low for w in ("kill", "attack", "fight", "slay", "defeat", "eliminate"))
-            named_prey = next(
-                (a for a in self.agents.values() if a.name.lower() in low or a.id.lower() in low),
-                None,
-            )
+            attack_verbs = ("kill", "attack", "fight", "slay", "defeat", "eliminate", "strike")
+            verb_positions = [low.find(v) for v in attack_verbs if v in low]
+            verb_pos = min(verb_positions) if verb_positions else -1
+            attack_intent = verb_pos >= 0
+
+            # If sent to "all" with an explicit attacker before the verb (e.g. "Elena kill Aiden"), scope to Elena
+            if attack_intent and agent_id == "all" and verb_pos > 0:
+                pre_verb = low[:verb_pos]
+                named_attackers = [a for a in self.agents.values() if a.name.lower() in pre_verb or a.id.lower() in pre_verb]
+                if named_attackers:
+                    targets = named_attackers
+
+            def pick_prey_for(ag: NpcAgent) -> NpcAgent | None:
+                peers = [a for a in self.agents.values() if a.id != ag.id]
+                if verb_pos >= 0:
+                    post = low[verb_pos:]
+                    after = [a for a in peers if a.name.lower() in post or a.id.lower() in post]
+                    if after:
+                        after.sort(key=lambda a: (post.find(a.name.lower()) if a.name.lower() in post else post.find(a.id.lower())))
+                        return after[0]
+                matches = [a for a in peers if a.name.lower() in low or a.id.lower() in low]
+                return matches[0] if matches else (peers[0] if len(peers) == 1 else None)
+
             for ag in targets:
                 ag.remember(f"A whisper from the sky: {value}")
                 if stop_fight:
@@ -1425,11 +1445,15 @@ class Simulation:
                         ag.job, ag.target, ag.path = None, None, []
                         ag.animation, ag.current_action = "idle", "idle"
                     ag.thought = "Standing down as instructed."
-                elif attack_intent and named_prey and named_prey.id != ag.id:
-                    ag.hostile_target = named_prey.id
-                    ag.thought = f"Understood. Moving to attack {named_prey.name}!"
-                    ag.job = None
-                    ag.start_action("attack", {"target_id": named_prey.id})
+                elif attack_intent:
+                    prey = pick_prey_for(ag)
+                    if prey and prey.id != ag.id:
+                        ag.hostile_target = prey.id
+                        ag.thought = f"Understood. Moving to attack {prey.name}!"
+                        ag.job = None
+                        ag.start_action("attack", {"target_id": prey.id})
+                    else:
+                        ag.thought = f"I heard a whisper: {value[:200]}. I will think about it while caring for myself."
                 else:
                     ag.thought = f"I heard a whisper: {value[:200]}. I will think about it while caring for myself."
         elif action == "heal_npc":
