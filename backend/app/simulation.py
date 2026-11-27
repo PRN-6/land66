@@ -702,13 +702,22 @@ class NpcAgent:
                 return
             self.remember("I reconsidered an idea that was no longer possible.")
         if sim.biome == "market":
-            spots = [(16, 11, 19), (9, 11, 11), (22, 11, 11), (22, 11, 18), (13, 11, 16)]
-            target_spot = spots[(sim.tick // 80 + self.variant) % len(spots)]
+            spots = [(16, 11, 19), (9, 11, 11), (22, 11, 11), (22, 11, 18), (13, 11, 16), (16, 11, 22)]
+            target_spot = spots[(sim.tick // 80 + self.variant + (2 if self.id == "aiden" else 0)) % len(spots)]
             if inv["berries"] > 0 and self.needs["hunger"] < 50 and self.choose("eat", "Enjoying a sweet market snack.", "Snack at the bazaar", food="berries"):
                 return
-            if self.grid_pos != target_spot and self.choose("walk", "Strolling past the Sky Market stalls and merchants.", "Browse market stalls", x=target_spot[0], y=target_spot[1], z=target_spot[2]):
+            if self.grid_pos != target_spot and self.choose(
+                "walk",
+                "Trading my weekly crops and goods with the Sky Market merchants." if self.id == "aiden" else "Strolling past the Sky Market stalls and greeting visitors.",
+                "Trade at Sky Market" if self.id == "aiden" else "Browse market stalls",
+                x=target_spot[0], y=target_spot[1], z=target_spot[2],
+            ):
                 return
-            self.choose("idle", "Checking prices and rare crafts at the Sky Market.", "Window shop")
+            self.choose(
+                "idle",
+                "Negotiating prices with Lyra, Milo, Suki, and Bram." if self.id == "aiden" else "Checking prices and rare crafts at the Sky Market.",
+                "Market trade" if self.id == "aiden" else "Window shop",
+            )
             return
         if self.household.choose_maintenance():
             return
@@ -1074,6 +1083,8 @@ class Simulation:
         self.entity_counter = 0
         self.dropped_items: list[dict] = []
         self.dropped_item_counter = 0
+        self.last_market_day = 0
+        self._away_stub: NpcAgent | None = None
         self.agent_counter = 1
         self.home = HomeState()
         start = (16, 11, 22) if self.biome == "market" else (self.world.feet_at(16, 20) or (16, 11, 20))
@@ -1104,12 +1115,29 @@ class Simulation:
             self.primary.remember(f"Awakened as an independent resident of '{self.world_name}' ({preset_label}).")
 
     def _seed_market_merchants(self) -> None:
+        # Autonomous AI merchants & bazaar regulars living in the Sky Market world
+        resident_roster = [
+            ("milo", "Milo", "farmer", 0, (10, 11, 10), "Manage bakery & crop trade stall"),
+            ("suki", "Suki", "builder", 1, (21, 11, 10), "Appraise gems, marble, and sky ore"),
+            ("bram", "Bram", "forager", 3, (21, 11, 20), "Trade timber, berries, and island crafts"),
+            ("vesper", "Vesper", "pioneer", 4, (13, 11, 16), "Welcome traders and browse the plaza"),
+        ]
+        for mid, mname, mrole, mvar, spot, mgoal in resident_roster:
+            pos = spot if self.world.walkable(spot) else (self._find_open_spot(spot) or (16, 11, 18))
+            npc = NpcAgent(self, mid, mname, role=mrole, variant=mvar, start_pos=pos)
+            npc.current_goal = mgoal
+            npc.thought = f"I'm {mname}, working at the Sky Market bazaar!"
+            npc.remember(f"Set up my trade station at Sky Market as {mrole}.")
+            self.agents[mid] = npc
+        self.agent_counter = max(self.agent_counter, len(self.agents))
+
         stalls = [
             ("villager", "Baker Pip", (9, 11, 9), 0, 0.0),
             ("villager", "Jeweler Kai", (22, 11, 9), 1, 0.0),
             ("villager", "Artisan Nora", (22, 11, 21), 2, 0.0),
             ("cat", "Mochi", (14, 11, 14), 0, 0.8),
             ("duck", "Puddle", (15, 11, 16), 3, 2.2),
+            ("fox", "Maple", (18, 11, 15), 1, 1.4),
         ]
         for kind, name, pos, variant, yaw in stalls:
             if not self.world.walkable(pos):
@@ -1130,13 +1158,22 @@ class Simulation:
 
     @property
     def primary_id(self) -> str:
-        if "aiden" in self.agents:
+        if self.biome != "market" and "aiden" in self.agents:
             return "aiden"
-        return next(iter(self.agents.keys()))
+        if self.agents:
+            return next(iter(self.agents.keys()))
+        return "aiden"
 
     @property
     def primary(self) -> NpcAgent:
-        return self.agents[self.primary_id]
+        if self.agents:
+            return self.agents[self.primary_id]
+        if self._away_stub is None:
+            self._away_stub = NpcAgent(self, "aiden", "Aiden", role="pioneer", variant=0, start_pos=(10, 11, 15))
+            self._away_stub.current_action = "visiting_market"
+            self._away_stub.current_goal = "Trading weekly crops and products at Sky Market"
+            self._away_stub.thought = "Visited Sky Market for my weekly 7-day trade!"
+        return self._away_stub
 
     @property
     def household(self) -> Household:
@@ -1909,6 +1946,7 @@ class Simulation:
             "last_weather_period": int(self.last_weather_period),
             "entity_counter": int(self.entity_counter),
             "dropped_item_counter": int(self.dropped_item_counter),
+            "last_market_day": int(self.last_market_day),
             "agent_counter": int(self.agent_counter),
             "world": self.world.export_state(),
             "home": self.home.export_state(),
@@ -2017,6 +2055,8 @@ class Simulation:
         sim.dropped_item_counter = max(
             len(sim.dropped_items), int(data.get("dropped_item_counter", len(sim.dropped_items)))
         )
+        sim.last_market_day = max(0, int(data.get("last_market_day", 0)))
+        sim._away_stub = None
         sim.agent_counter = max(1, int(data.get("agent_counter", 1)))
         sim.home = HomeState.from_state(data.get("home", {}))
         sim.agents = {}
@@ -2025,7 +2065,7 @@ class Simulation:
                 continue
             agent = NpcAgent.from_save(sim, agent_data)
             sim.agents[agent.id] = agent
-        if not sim.agents:
+        if not sim.agents and not data.get("allow_empty_agents"):
             raise ValueError("Invalid save file: at least one NPC agent is required")
         sim.agent_counter = max(sim.agent_counter, len(sim.agents))
         return sim

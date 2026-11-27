@@ -246,6 +246,7 @@ export class OfflineDemoSimulator {
   private extraAgents: DemoAgent[] = [];
   private entityCounter = 0;
   private droppedItemCounter = 0;
+  private lastMarketDay = 0;
   private agentCounter = 1;
   private traceCounter = 0;
 
@@ -642,6 +643,7 @@ export class OfflineDemoSimulator {
     this.extraAgents = [];
     this.entityCounter = 0;
     this.droppedItemCounter = 0;
+    this.lastMarketDay = 0;
     this.agentCounter = 1;
     const reg = this.worldRegistry.find((w) => w.id === this.activeWorldId);
     if (reg) reg.seed = seed;
@@ -715,6 +717,7 @@ export class OfflineDemoSimulator {
     this.extraAgents = [];
     this.entityCounter = 0;
     this.droppedItemCounter = 0;
+    this.lastMarketDay = 0;
     this.agentCounter = 1;
     this.state = this.createInitialState(chosenSeed, wid, prevCoins, cleanName, preset);
     if (payload.starter_name?.trim()) {
@@ -1531,12 +1534,107 @@ export class OfflineDemoSimulator {
     this.state.stats.house_progress = 100;
     this.state.stats.house_stage = 'complete';
 
+    if (this.extraAgents.length === 0) {
+      const marketResidents: Array<{
+        id: string;
+        name: string;
+        role: string;
+        variant: number;
+        x: number;
+        z: number;
+        goal: string;
+        thought: string;
+      }> = [
+        {
+          id: 'milo',
+          name: 'Milo',
+          role: 'farmer',
+          variant: 0,
+          x: 10,
+          z: 10,
+          goal: 'Manage bakery & crop trade stall',
+          thought: 'Buying fresh wheat, berries, and baked goods at the plaza!',
+        },
+        {
+          id: 'suki',
+          name: 'Suki',
+          role: 'builder',
+          variant: 1,
+          x: 21,
+          z: 10,
+          goal: 'Appraise gems, marble, and sky ore',
+          thought: 'Inspecting sparkling crystals, marble, and gold ingots today.',
+        },
+        {
+          id: 'bram',
+          name: 'Bram',
+          role: 'forager',
+          variant: 3,
+          x: 21,
+          z: 20,
+          goal: 'Trade timber, berries, and island crafts',
+          thought: 'Trading island crafts and supplies with visitors!',
+        },
+        {
+          id: 'vesper',
+          name: 'Vesper',
+          role: 'pioneer',
+          variant: 4,
+          x: 13,
+          z: 16,
+          goal: 'Welcome traders and browse the plaza',
+          thought: 'Always lively at Sky Market with travelers arriving every week!',
+        },
+      ];
+      for (const mr of marketResidents) {
+        this.extraAgents.push({
+          id: mr.id,
+          name: mr.name,
+          role: mr.role,
+          variant: mr.variant,
+          position: { x: mr.x, y: 11, z: mr.z },
+          grid_pos: { x: mr.x, y: 11, z: mr.z },
+          yaw: 0,
+          animation: 'idle',
+          action_progress: 0,
+          current_action: 'idle',
+          current_goal: mr.goal,
+          thought: mr.thought,
+          needs: { hunger: 92, energy: 94, thirst: 90, health: 100, mood: 88 },
+          inventory: { berries: 3, bread: 2, wood_log: 2, stone: 2 },
+          target_block: null,
+          path: [],
+          perception: {
+            location_label: 'Sky Market Plaza',
+            sheltered: true,
+            visible_summary: 'Market stalls, lanterns, and fellow traders bustling around the marble fountain.',
+            nearby_entities: [],
+          },
+          memories: [{ day: 1, clock: '08:00', text: `Set up stall at Sky Market as ${mr.role}.` }],
+          journal: [],
+          target: null,
+          wait: 1.5,
+          llmConfig: {
+            provider: 'fallback',
+            model: 'offline-demo-sim',
+            base_url: '',
+            temperature: 0.7,
+            decision_interval_ticks: 100,
+            enabled: false,
+            locked: false,
+          },
+        });
+      }
+      this.agentCounter = 5;
+    }
+
     const merchants: Array<[EntityKind, string, number, number, number]> = [
       ['villager', 'Baker Pip', 9, 9, 0],
       ['villager', 'Jeweler Kai', 22, 9, 1],
       ['villager', 'Artisan Nora', 22, 21, 2],
       ['cat', 'Mochi', 14, 14, 0],
       ['duck', 'Puddle', 15, 16, 3],
+      ['fox', 'Maple', 18, 15, 1],
     ];
     for (const [kind, name, mx, mz, variant] of merchants) {
       this.entityCounter += 1;
@@ -1668,6 +1766,7 @@ export class OfflineDemoSimulator {
     this.updateDroppedItems(simDt);
     this.updateExtraAgents(simDt);
     this.stepAutonomousGate(blockUpdates);
+    this.stepWeeklyMarketSale();
 
     if (this.state.tick % 20 === 0) {
       let ripe = 0;
@@ -1923,6 +2022,59 @@ export class OfflineDemoSimulator {
           }
         }
       }
+    }
+  }
+
+  private stepWeeklyMarketSale(): void {
+    if (this.activeWorldId !== 'homestead') return;
+    if (this.state.day < 7 || this.state.day % 7 !== 0 || this.state.day <= this.lastMarketDay) return;
+    this.lastMarketDay = this.state.day;
+
+    const npc = this.state.npc;
+    const inv = npc.inventory;
+    const gateMissing = this.getGateState().missing_items ?? {};
+    const reserves: Record<string, number> = {
+      berries: 4,
+      bread: 2,
+      cooked_meat: 2,
+      wood_log: 4,
+      wood_plank: 4,
+      stone: 4,
+    };
+
+    let earnedTotal = 0;
+    const soldParts: string[] = [];
+    for (const [item, price] of Object.entries(DEMO_SELL_PRICES)) {
+      const reserve = (reserves[item] ?? 0) + (gateMissing[item] ?? 0);
+      const qty = Math.max(0, (inv[item] ?? 0) - reserve);
+      if (qty <= 0) continue;
+      inv[item] = (inv[item] ?? 0) - qty;
+      const earned = qty * price;
+      earnedTotal += earned;
+      soldParts.push(`${qty}x ${item.replace(/_/g, ' ')}`);
+    }
+
+    if (earnedTotal > 0) {
+      this.state.coins = (this.state.coins ?? 250) + earnedTotal;
+      if (this.cachedWorlds.market) {
+        this.cachedWorlds.market.state.coins = this.state.coins;
+        this.cachedWorlds.market.state.npc.memories.unshift({
+          day: this.state.day,
+          clock: this.state.clock_str,
+          text: `${npc.name} visited Sky Market and traded ${soldParts.join(', ')} for ${earnedTotal} coins.`,
+        });
+      }
+      const msg = `Day ${this.state.day} Sky Market Trip: sold ${soldParts.join(', ')} for ${earnedTotal} coins!`;
+      npc.current_action = 'visiting_market';
+      npc.current_goal = 'Traded weekly crops and products at Sky Market';
+      npc.thought = msg;
+      npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: msg });
+      npc.journal.unshift({ day: this.state.day, clock: this.state.clock_str, text: msg });
+    } else {
+      const msg = `Day ${this.state.day}: Visited Sky Market merchants (no surplus crops or goods to sell today).`;
+      npc.current_goal = 'Visited Sky Market bazaar';
+      npc.thought = msg;
+      npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: msg });
     }
   }
 

@@ -35,16 +35,20 @@ class Runtime:
         self.active_world_id = "homestead"
         self.default_timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "45"))
         self.brains_by_world: dict[str, dict[str, Brain]] = {
-            wid: {sim.primary_id: (brain if wid == "homestead" and brain else Brain(timeout=self.default_timeout))}
+            wid: {
+                aid: (brain if wid == "homestead" and aid == sim.primary_id and brain else Brain(timeout=self.default_timeout))
+                for aid in sim.agents
+            }
             for wid, sim in self.worlds.items()
         }
         self.clients: set[asyncio.Queue] = set()
         self.thinking_tasks: dict[str, asyncio.Task] = {}
         self.loop_task: asyncio.Task | None = None
         self.next_ticks_by_world: dict[str, dict[str, int]] = {
-            wid: {sim.primary_id: 0}
+            wid: {aid: 0 for aid in sim.agents}
             for wid, sim in self.worlds.items()
         }
+        self.active_market_trip: dict | None = None
         self._last_autosave_tick = 0
 
     @property
@@ -172,10 +176,17 @@ class Runtime:
         self.sync_status()
 
     def export_runtime_bundle(self) -> dict:
+        worlds_out: dict[str, dict] = {}
+        for wid, sim in self.worlds.items():
+            wdata = sim.export_save()
+            if not sim.agents:
+                wdata["allow_empty_agents"] = True
+            worlds_out[wid] = wdata
         return {
             "format": "land66-runtime-autosave-v1",
             "active_world_id": self.active_world_id,
-            "worlds": {wid: sim.export_save() for wid, sim in self.worlds.items()},
+            "active_market_trip": dict(self.active_market_trip) if self.active_market_trip else None,
+            "worlds": worlds_out,
             "brains_by_world": {
                 wid: {aid: b.config.public() for aid, b in bmap.items()}
                 for wid, bmap in self.brains_by_world.items()
@@ -225,6 +236,8 @@ class Runtime:
         self.worlds = restored_worlds
         self.brains_by_world = restored_brains
         self.next_ticks_by_world = restored_ticks
+        raw_trip = bundle.get("active_market_trip")
+        self.active_market_trip = dict(raw_trip) if isinstance(raw_trip, dict) else None
         raw_active = str(bundle.get("active_world_id", "homestead"))
         self.active_world_id = raw_active if raw_active in self.worlds else "homestead"
         self.sync_status()
@@ -256,7 +269,8 @@ class Runtime:
     async def reset(self, seed):
         await self.cancel_thinking()
         old_pid = self.sim.primary_id
-        primary_brain = self.brains.get(old_pid) or Brain(timeout=self.default_timeout)
+        old_brains = dict(self.brains)
+        primary_brain = old_brains.get(old_pid) or Brain(timeout=self.default_timeout)
         coins = self.sim.coins
         biome = self.sim.biome
         wid = self.sim.world_id
@@ -264,8 +278,13 @@ class Runtime:
         new_sim = Simulation(seed, biome=biome, coins=coins, world_id=wid, world_name=wname)
         self.worlds[wid] = new_sim
         new_pid = new_sim.primary_id
-        self.brains = {new_pid: primary_brain}
-        self.next_think_ticks = {new_pid: 0}
+        self.brains = {
+            aid: (old_brains.get(aid) or (primary_brain if aid == new_pid else Brain(timeout=self.default_timeout)))
+            for aid in new_sim.agents
+        }
+        self.next_think_ticks = {aid: 0 for aid in new_sim.agents}
+        if self.active_market_trip and wid in {"homestead", "market"}:
+            self.active_market_trip = None
         self.sync_status()
         self.save_autosave()
         self.publish(self.world_init_payload())
@@ -446,6 +465,144 @@ class Runtime:
             self.sync_status()
             self.publish(dict(type="llm_trace", trace=trace))
 
+    async def step_weekly_market_trip(self, step_dt: float = 0.1) -> None:
+        """Send Homestead NPC to Market every 7th day, sell surplus crops/products, and return home."""
+        from .market import execute_sell, sellable_surplus_for_market
+
+        home_sim = self.worlds.get("homestead")
+        market_sim = self.worlds.get("market")
+        if not home_sim or not market_sim:
+            return
+
+        # 1. Start weekly Day-7 trip if due
+        if (
+            self.active_market_trip is None
+            and home_sim.day >= 7
+            and home_sim.day % 7 == 0
+            and home_sim.day > home_sim.last_market_day
+        ):
+            traveler_id = "aiden" if "aiden" in home_sim.agents else (home_sim.primary_id if home_sim.agents else None)
+            if traveler_id and traveler_id in home_sim.agents:
+                if self.active_world_id == "homestead":
+                    await self.cancel_thinking(traveler_id)
+                home_sim.last_market_day = home_sim.day
+                traveler = home_sim.agents.pop(traveler_id)
+                home_pos = list(traveler.grid_pos)
+                traveler_brain = self.brains_by_world.setdefault("homestead", {}).pop(traveler_id, None) or Brain(
+                    timeout=self.default_timeout
+                )
+                self.next_ticks_by_world.setdefault("homestead", {}).pop(traveler_id, None)
+
+                traveler.sim = market_sim
+                traveler.job = None
+                traveler.target = None
+                traveler.path = []
+                traveler.hostile_target = None
+                traveler.threatened_by = None
+                spawn_spot = market_sim._find_open_spot((16, 11, 22)) or (16, 11, 22)
+                traveler.grid_pos = spawn_spot
+                traveler.position = [float(spawn_spot[0]), float(spawn_spot[1]), float(spawn_spot[2])]
+                traveler.current_action = "walk"
+                traveler.animation = "walking"
+                traveler.current_goal = f"Day {home_sim.day} Sky Market: sell crops & goods"
+                traveler.thought = f"Day {home_sim.day}! Traveled to Sky Market to sell my surplus crops and products."
+                traveler.remember(f"Day {home_sim.day}: Arrived at Sky Market to trade crops and products.")
+                market_sim.agents[traveler_id] = traveler
+                self.brains_by_world.setdefault("market", {})[traveler_id] = traveler_brain
+                self.next_ticks_by_world.setdefault("market", {})[traveler_id] = market_sim.tick
+                market_sim.coins = home_sim.coins
+
+                self.active_market_trip = {
+                    "agent_id": traveler_id,
+                    "home_world": "homestead",
+                    "home_pos": home_pos,
+                    "day": home_sim.day,
+                    "next_trade_elapsed": market_sim.elapsed + 1.0,
+                    "return_at_elapsed": market_sim.elapsed + 10.0,
+                    "sold": {},
+                    "earned": 0,
+                }
+                self.sync_status()
+                self.save_autosave()
+                return
+
+        # 2. Progress ongoing Market trip even when God is viewing Homestead
+        trip = self.active_market_trip
+        if not trip:
+            return
+
+        aid = str(trip.get("agent_id", "aiden"))
+        agent = market_sim.agents.get(aid)
+        if not agent:
+            self.active_market_trip = None
+            return
+
+        if self.active_world_id != "market":
+            market_sim.step(step_dt, force=True)
+
+        surplus = sellable_surplus_for_market(home_sim, agent)
+        if market_sim.elapsed >= float(trip.get("next_trade_elapsed", 0.0)) and surplus:
+            item, qty, _price = surplus[0]
+            try:
+                _msg, info = execute_sell(market_sim, item, qty, agent_id=aid)
+                earned = int(info.get("earned", 0))
+                sold_map = trip.setdefault("sold", {})
+                sold_map[item] = int(sold_map.get(item, 0)) + qty
+                trip["earned"] = int(trip.get("earned", 0)) + earned
+                for wsim in self.worlds.values():
+                    wsim.coins = market_sim.coins
+                merchant = next(
+                    (m for mid, m in market_sim.agents.items() if mid != aid),
+                    None,
+                )
+                if merchant is not None:
+                    merchant.thought = f"Bought {qty}x {item.replace('_', ' ')} from {agent.name} for {earned} coins!"
+            except ValueError:
+                pass
+            trip["next_trade_elapsed"] = market_sim.elapsed + 1.2
+
+        # 3. Return home once surplus is sold and visit window finished
+        if not sellable_surplus_for_market(home_sim, agent) and market_sim.elapsed >= float(
+            trip.get("return_at_elapsed", 0.0)
+        ):
+            if self.active_world_id == "market":
+                await self.cancel_thinking(aid)
+            market_sim.agents.pop(aid, None)
+            ret_brain = self.brains_by_world.setdefault("market", {}).pop(aid, None) or Brain(
+                timeout=self.default_timeout
+            )
+            self.next_ticks_by_world.setdefault("market", {}).pop(aid, None)
+
+            agent.sim = home_sim
+            agent.job = None
+            agent.target = None
+            agent.path = []
+            raw_home = trip.get("home_pos") or [16, 11, 20]
+            pref = (int(raw_home[0]), int(raw_home[1]), int(raw_home[2]))
+            land_spot = home_sim._find_open_spot(pref) or (16, 11, 20)
+            agent.grid_pos = land_spot
+            agent.position = [float(land_spot[0]), float(land_spot[1]), float(land_spot[2])]
+            agent.current_action = "idle"
+            agent.animation = "idle"
+            earned_total = int(trip.get("earned", 0))
+            sold_summary = ", ".join(f"{q}x {k.replace('_', ' ')}" for k, q in (trip.get("sold") or {}).items())
+            if earned_total > 0:
+                summary_msg = f"Returned from Day {trip['day']} Sky Market: sold {sold_summary} for {earned_total} coins!"
+            else:
+                summary_msg = f"Returned home from visiting friends at Sky Market on Day {trip['day']}."
+            agent.current_goal = "Build, farm, and prepare for next weekly Market"
+            agent.thought = summary_msg
+            agent.remember(summary_msg)
+            agent.write_journal(summary_msg)
+
+            home_sim.agents[aid] = agent
+            home_sim._away_stub = None
+            self.brains_by_world.setdefault("homestead", {})[aid] = ret_brain
+            self.next_ticks_by_world.setdefault("homestead", {})[aid] = home_sim.tick
+            self.active_market_trip = None
+            self.sync_status()
+            self.save_autosave()
+
     async def run(self):
         while True:
             started = time.monotonic()
@@ -454,6 +611,7 @@ class Runtime:
                 if not self.sim.paused:
                     for _ in range(self.sim.speed):
                         self.sim.step(.1)
+                        await self.step_weekly_market_trip(.1)
                     for aid, agent in list(self.sim.agents.items()):
                         b = self.brains.get(aid)
                         if not b:
@@ -666,6 +824,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None, persist: boo
         elif command.action == "step":
             rt.sim.paused = True
             rt.sim.step(.1, force=True)
+            await rt.step_weekly_market_trip(.1)
         elif command.action == "set_speed":
             if command.speed is None:
                 raise HTTPException(422, "set_speed requires speed: 1, 2 or 5")

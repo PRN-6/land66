@@ -528,3 +528,72 @@ def test_sky_drop_item_falls_lands_and_is_collected():
         st3 = client.get('/api/state').json()
         assert st3['npc']['inventory']['sunstone'] == before_sunstone + 5
         assert all(d['item'] != 'sunstone' for d in st3['dropped_items'])
+
+
+def test_market_has_multiple_npcs_and_weekly_day7_selling_trip():
+    with TestClient(client_app()) as client:
+        client.post('/api/sim/control', json={'action': 'pause'})
+
+        # 1. Sky Market has Lyra plus multiple independent AI NPCs living & trading there
+        sw_market = client.post('/api/world/switch', json={'world': 'market'})
+        assert sw_market.status_code == 200
+        m_agents = sw_market.json()['state']['agents']
+        m_names = {a['name'] for a in m_agents}
+        assert len(m_agents) >= 5
+        assert {'Lyra', 'Milo', 'Suki', 'Bram', 'Vesper'} <= m_names
+        # Independently configurable brains for every Market NPC
+        assert len(client.get('/api/agents').json()) >= 5
+
+        # Switch back to Homestead and stock Aiden with surplus wheat, bread, and iron ingots
+        client.post('/api/world/switch', json={'world': 'homestead'})
+        client.post(
+            '/api/god/intervene',
+            json={'action': 'drop_gift', 'value': {'wheat': 10, 'iron_ingot': 4, 'bread': 5}},
+        )
+
+        # Fix Aiden to Ollama before his Day-7 Market trip to verify his fixed Brain travels & returns intact
+        client.post(
+            '/api/llm/config?agent_id=aiden',
+            json={
+                'provider': 'ollama',
+                'base_url': 'http://localhost:11434',
+                'model': 'llama3.2',
+                'enabled': True,
+                'locked': True,
+            },
+        )
+
+        # Jump right before Day 7 rollover and step simulation through the weekly Market trip
+        rt = client.app.state.runtime
+        home_sim = rt.worlds['homestead']
+        start_coins = home_sim.coins
+        home_sim.elapsed = 6 * 360.0 - 0.05  # Day 6 -> rolls into Day 7 on next step
+
+        # Depart on Day 7 rollover
+        client.post('/api/sim/control', json={'action': 'step'})
+        assert home_sim.day == 7
+        assert rt.active_market_trip is not None
+        # Aiden physically arrived in Market alongside Lyra, Milo, Suki, Bram, Vesper with his fixed Brain
+        market_names = {a.name for a in rt.worlds['market'].agents.values()}
+        assert {'Aiden', 'Lyra', 'Milo', 'Suki', 'Bram', 'Vesper'} <= market_names
+        assert rt.brains_by_world['market']['aiden'].config.model == 'llama3.2'
+        assert rt.brains_by_world['market']['aiden'].config.locked is True
+
+        # Advance simulation (~14 sim seconds across step calls) until Aiden sells goods & returns home
+        for _ in range(130):
+            client.post('/api/sim/control', json={'action': 'step'})
+            if rt.active_market_trip is None:
+                break
+
+        assert rt.active_market_trip is None
+        assert 'aiden' in home_sim.agents
+        assert 'aiden' not in rt.worlds['market'].agents
+        # Sold 10 wheat (30), 3 surplus bread (21), 4 iron ingots (36) -> earned at least 87 coins
+        assert home_sim.coins >= start_coins + 87
+        assert rt.worlds['market'].coins == home_sim.coins
+        assert home_sim.agents['aiden'].inventory['wheat'] == 0
+        assert home_sim.agents['aiden'].inventory['iron_ingot'] == 0
+        assert home_sim.agents['aiden'].inventory['bread'] == 2  # Kept survival reserve
+        # Fixed Brain preserved cleanly across the trip and return
+        assert rt.brains_by_world['homestead']['aiden'].config.model == 'llama3.2'
+        assert rt.brains_by_world['homestead']['aiden'].config.locked is True

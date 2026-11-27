@@ -150,3 +150,45 @@ def execute_sell(sim: Simulation, item: str, quantity: int = 1, agent_id: str | 
         "earned": earned,
         "coins": sim.coins,
     }
+
+
+def sellable_surplus_for_market(home_sim: Simulation, agent) -> list[tuple[str, int, int]]:
+    """Return sellable crops and products above survival, house-build, and gate reserves."""
+    house_incomplete = home_sim.house_progress() < 100.0
+    gate_missing = home_sim.gate_snapshot().get("missing_items", {})
+    base_reserves = {
+        "berries": 4,
+        "bread": 2,
+        "cooked_meat": 2,
+        "fiber": 2,
+        "wood_log": 4 if house_incomplete else 1,
+        "wood_plank": 4 if house_incomplete else 1,
+        "stone": 4 if house_incomplete else 1,
+        "clay": 1,
+        "sand": 1,
+        "sandstone": 1,
+        "coal": 2,
+        "iron_ore": 1,
+        "copper_ore": 1,
+    }
+    priority = [
+        "wheat", "bread", "cooked_meat", "berries", "raw_meat", "hide", "feather",
+        "gold_ingot", "iron_ingot", "copper_ingot", "brick", "glass_pane", "bamboo",
+        "sunstone", "crystal", "gold_ore", "obsidian", "marble", "wood_plank",
+        "wood_log", "stone", "sandstone", "iron_ore", "copper_ore", "coal", "clay", "sand", "fiber",
+    ]
+    out: list[tuple[str, int, int]] = []
+    seen = set()
+    for item in [*priority, *SELL_PRICES.keys()]:
+        if item in seen:
+            continue
+        seen.add(item)
+        price = SELL_PRICES.get(item, 0)
+        if price <= 0:
+            continue
+        reserve = int(base_reserves.get(item, 0)) + int(gate_missing.get(item, 0))
+        have = int(agent.inventory.get(item, 0))
+        qty = have - reserve
+        if qty > 0:
+            out.append((item, qty, price))
+    return out
