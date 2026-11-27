@@ -1,5 +1,5 @@
 import pytest
-from app.world import World, PALETTE, GRASS, STONE, WATER, LOG, LEAVES, DOOR, AIR
+from app.world import World, WORLD_PRESETS, PALETTE, GRASS, STONE, WATER, LOG, LEAVES, DOOR, AIR
 from app.pathfinding import astar
 
 
@@ -74,3 +74,13 @@ def test_cannot_step_two_blocks_or_bump_head():
     w.set(2,1,1,STONE)
     w.set(1,3,1,STONE)
     assert astar(w,(1,1,1),(2,2,1)) is None
+
+
+@pytest.mark.parametrize("preset", sorted(WORLD_PRESETS.keys()))
+def test_all_world_presets_have_valid_spawn_and_water(preset):
+    w = World(seed=321, biome=preset)
+    assert w.biome == preset
+    assert len(w.blocks) == len(w.meta) == 24576
+    assert w.locations[WATER]
+    spawn = (16, 11, 22) if preset == "market" else w.feet_at(16, 20)
+    assert spawn is not None and w.walkable(spawn)

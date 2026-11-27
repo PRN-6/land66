@@ -15,6 +15,7 @@ import type {
   NpcState,
   SaveSlotSummary,
   SimSpeed,
+  WorldPresetId,
   WorldSavePayload,
   WorldStateSnapshot,
 } from './types/world';
@@ -26,6 +27,7 @@ import { LlmModal } from './components/LlmModal';
 import { SaveModal } from './components/SaveModal';
 import { ShopModal } from './components/ShopModal';
 import { GateModal } from './components/GateModal';
+import { CreateWorldModal } from './components/CreateWorldModal';
 import { InspectToast } from './components/InspectToast';
 import { NpcThoughtOverlay } from './components/NpcThoughtOverlay';
 
@@ -55,6 +57,7 @@ export function App() {
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [shopModalOpen, setShopModalOpen] = useState(false);
   const [gateModalOpen, setGateModalOpen] = useState(false);
+  const [createWorldModalOpen, setCreateWorldModalOpen] = useState(false);
   const [marketCatalog, setMarketCatalog] = useState<MarketCatalogPayload | null>(null);
   const [saveSlots, setSaveSlots] = useState<SaveSlotSummary[]>([]);
   const [savesLoading, setSavesLoading] = useState(false);
@@ -512,6 +515,69 @@ export function App() {
     [notifyError, worldState.gate?.unlocked],
   );
 
+  const handleCreateWorld = useCallback(
+    async (payload: {
+      name?: string;
+      preset: WorldPresetId;
+      seed?: number;
+      starter_name?: string;
+      starter_role: AgentRole;
+      switch: boolean;
+    }): Promise<string | null> => {
+      try {
+        if (connectionModeRef.current === 'live') {
+          const res = await backendApi.createWorld(payload);
+          setWorldState(res.state);
+        } else {
+          const init = demoSim.createWorld(payload);
+          if (init) {
+            sceneRef.current?.applyWorldInit(init);
+            setWorldState(init.state);
+            setSelectedAgentId('aiden');
+            sceneRef.current?.setSelectedAgent('aiden');
+          } else {
+            const next = demoSim.getState();
+            sceneRef.current?.applyTickUpdate([], next);
+            setWorldState(next);
+          }
+        }
+        setInspectTarget(null);
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : 'Failed to create floating world';
+      }
+    },
+    [],
+  );
+
+  const handleDeleteWorld = useCallback(
+    async (worldId: string): Promise<string | null> => {
+      try {
+        if (connectionModeRef.current === 'live') {
+          const res = await backendApi.deleteWorld(worldId);
+          setWorldState(res.state);
+        } else {
+          const init = demoSim.deleteWorld(worldId);
+          if (init) {
+            sceneRef.current?.applyWorldInit(init);
+            setWorldState(init.state);
+            setSelectedAgentId('aiden');
+            sceneRef.current?.setSelectedAgent('aiden');
+          } else {
+            const next = demoSim.getState();
+            sceneRef.current?.applyTickUpdate([], next);
+            setWorldState(next);
+          }
+        }
+        setInspectTarget(null);
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : 'Failed to delete floating world';
+      }
+    },
+    [],
+  );
+
   const handleGateDecipher = useCallback(
     async (rune: 'anchor' | 'conduit' | 'core', answer: string) => {
       if (connectionModeRef.current === 'live') {
@@ -657,6 +723,7 @@ export function App() {
           inspectorOpen={inspectorOpen}
           onControl={handleControl}
           onSwitchWorld={handleSwitchWorld}
+          onOpenCreateWorldModal={() => setCreateWorldModalOpen(true)}
           onCameraMode={handleCameraMode}
           onToggleThoughtBubble={() => setShowThoughtBubble((v) => !v)}
           onTogglePath={handleTogglePath}
@@ -710,6 +777,7 @@ export function App() {
         onOpenBrainForAgent={handleOpenBrainForAgent}
         onCreateAgent={handleCreateAgent}
         onDeleteAgent={handleDeleteAgent}
+        onOpenCreateWorldModal={() => setCreateWorldModalOpen(true)}
         onGodIntervene={handleGodIntervene}
       />
 
@@ -795,6 +863,16 @@ export function App() {
         onDeleteSlot={handleDeleteSaveSlot}
         onDownloadFile={handleDownloadSaveFile}
         onUploadFile={handleUploadSaveFile}
+      />
+
+      <CreateWorldModal
+        open={createWorldModalOpen}
+        activeWorldId={worldState.world_id ?? 'homestead'}
+        worlds={worldState.worlds ?? []}
+        onClose={() => setCreateWorldModalOpen(false)}
+        onCreateWorld={handleCreateWorld}
+        onSwitchWorld={handleSwitchWorld}
+        onDeleteWorld={handleDeleteWorld}
       />
     </div>
   );

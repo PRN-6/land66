@@ -18,13 +18,45 @@ PASSABLE = {AIR, DOOR, OPEN_DOOR, TORCH, WHEAT, BERRY, SAPLING}
 SUPPORT = {GRASS, DIRT, STONE, LOG, PLANK, COBBLE, FARMLAND, ROOF}
 Pos = tuple[int, int, int]
 
+WORLD_PRESETS: dict[str, dict[str, str]] = {
+    "homestead": {
+        "label": "Lush Island",
+        "description": "Forested floating island with pond, berry bushes, mixed trees, and ore veins.",
+    },
+    "alpine_peaks": {
+        "label": "Alpine Peaks",
+        "description": "Stepped slate & marble mountain ridges, pine forest, crystal veins, and cold spring.",
+    },
+    "sakura_grove": {
+        "label": "Sakura Sanctuary",
+        "description": "Terraced blossom sanctuary with sakura trees, marble walkways, and lantern shrines.",
+    },
+    "crystal_canyon": {
+        "label": "Crystal Canyon",
+        "description": "Sandstone & slate canyon cliffs with glowing crystal spires, gold seams, and oasis.",
+    },
+    "obsidian_caldera": {
+        "label": "Volcanic Caldera",
+        "description": "Dark obsidian crater rim with radiant sunstone vents and rich mineral deposits.",
+    },
+    "flat_sandbox": {
+        "label": "Blank Canvas",
+        "description": "Wide level meadow island ready for custom God sculpting and multi-NPC builds.",
+    },
+    "market": {
+        "label": "Sky Market Bazaar",
+        "description": "Festive floating bazaar plaza with merchant stalls, wishing fountain, and lanterns.",
+    },
+}
+VALID_BIOMES = set(WORLD_PRESETS.keys())
+
 
 class World:
     width, height, depth = WIDTH, HEIGHT, DEPTH
 
     def __init__(self, seed: int = 66, biome: str = "homestead"):
         self.seed = seed
-        self.biome = biome if biome in {"homestead", "market"} else "homestead"
+        self.biome = biome if biome in VALID_BIOMES else "homestead"
         self.rng = random.Random(seed)
         self.blocks = [AIR] * (WIDTH * HEIGHT * DEPTH)
         self.meta = [0] * len(self.blocks)
@@ -35,9 +67,11 @@ class World:
         self.locations: dict[int, set[Pos]] = {block: set() for block in PALETTE}
         if self.biome == "market":
             self.generate_market()
-        else:
+        elif self.biome == "homestead":
             self.generate()
             self.generate_details()
+        else:
+            self.generate_preset(self.biome)
         self.updates.clear()
 
     @staticmethod
@@ -288,7 +322,124 @@ class World:
         self.set(16, 13, 25, STONE)
         self.set_material((16, 13, 25), "sunstone")
 
-    def grow_tree(self, p: Pos) -> bool:
+    def generate_preset(self, preset: str) -> None:
+        """Build a themed custom floating world preset while keeping a walkable clearing, pond, and ores."""
+        cfg = {
+            "alpine_peaks": dict(top_block=GRASS, top_mat="meadow_grass", rock_mat="slate", rim_boost=3, species="pine", tree_cap=24, ores=(("iron_ore", "iron_vein", 36), ("crystal", "crystal_vein", 24), ("gold_ore", "gold_vein", 24), ("coal", "coal_vein", 32), ("marble", "marble", 20))),
+            "sakura_grove": dict(top_block=GRASS, top_mat="meadow_grass", rock_mat="marble", rim_boost=1, species="sakura", tree_cap=22, ores=(("marble", "marble", 24), ("crystal", "crystal_vein", 20), ("gold_ore", "gold_vein", 20), ("iron_ore", "iron_vein", 28), ("coal", "coal_vein", 28))),
+            "crystal_canyon": dict(top_block=COBBLE, top_mat="sandstone", rock_mat="slate", rim_boost=2, species="autumn", tree_cap=12, ores=(("crystal", "crystal_vein", 30), ("gold_ore", "gold_vein", 28), ("copper_ore", "copper_vein", 30), ("marble", "marble", 20), ("obsidian", "obsidian", 18))),
+            "obsidian_caldera": dict(top_block=STONE, top_mat="obsidian", rock_mat="slate", rim_boost=3, species="pine", tree_cap=10, ores=(("obsidian", "obsidian", 32), ("gold_ore", "gold_vein", 26), ("copper_ore", "copper_vein", 30), ("iron_ore", "iron_vein", 30), ("coal", "coal_vein", 36))),
+            "flat_sandbox": dict(top_block=GRASS, top_mat="meadow_grass", rock_mat="granite", rim_boost=0, species="oak", tree_cap=6, ores=(("iron_ore", "iron_vein", 32), ("coal", "coal_vein", 32), ("gold_ore", "gold_vein", 20), ("crystal", "crystal_vein", 20), ("marble", "marble", 20))),
+        }.get(preset, dict(top_block=GRASS, top_mat="meadow_grass", rock_mat="granite", rim_boost=1, species="oak", tree_cap=20, ores=(("iron_ore", "iron_vein", 32), ("coal", "coal_vein", 32))))
+
+        for x in range(2, 31):
+            for z in range(2, 31):
+                r = math.hypot((x - 16) / 14, (z - 16) / 13)
+                ripple = math.sin(x * .44 + self.seed * .13) * math.cos(z * .38 - self.seed * .09)
+                if r > 1.0 + 0.05 * ripple:
+                    continue
+                if preset == "flat_sandbox":
+                    top = 10
+                else:
+                    ridge = max(0, int((r + ripple * 0.14 - 0.55) * cfg["rim_boost"] * 2.2))
+                    top = 10 + min(4, ridge)
+                if 10 <= x <= 25 and 10 <= z <= 21:
+                    top = 10
+                bottom = max(3, min(top - 1, 3 + int(5.5 * r * r + ripple * .6)))
+                for y in range(bottom, top + 1):
+                    if y == top:
+                        if preset in {"crystal_canyon", "obsidian_caldera"} and 12 <= x <= 20 and 12 <= z <= 20:
+                            self.set(x, y, z, GRASS)
+                            self.set_material((x, y, z), "meadow_grass")
+                        else:
+                            self.set(x, y, z, cfg["top_block"])
+                            self.set_material((x, y, z), cfg["top_mat"])
+                    elif y >= top - 2:
+                        self.set(x, y, z, DIRT)
+                    else:
+                        mat = "obsidian" if y <= 4 else "sunstone" if (preset == "obsidian_caldera" and y == 5 and (x + z) % 6 == 0) else cfg["rock_mat"]
+                        self.set(x, y, z, STONE)
+                        self.set_material((x, y, z), mat)
+
+        # Recessed freshwater spring/pond (walkable banks preserved)
+        for x, z in [(x, z) for x in range(21, 25) for z in range(13, 18)
+                     if ((x - 22.5) / 2.2) ** 2 + ((z - 15) / 2.6) ** 2 < 1]:
+            for y in range(10, 13):
+                self.set(x, y, z, AIR)
+            self.set(x, 9, z, DIRT)
+            self.set_material((x, 9, z), "sandy_bank" if preset == "crystal_canyon" else "clay_bank")
+            self.set(x, 10, z, WATER)
+
+        # Preset signature accents outside center spawn pad (16, 11, 20)
+        if preset == "sakura_grove":
+            for x in range(12, 21):
+                for z in (14, 18):
+                    if self.get(x, 10, z) != WATER:
+                        self.set(x, 10, z, COBBLE)
+                        self.set_material((x, 10, z), "marble")
+            for lx, lz in ((11, 14), (11, 18), (20, 14), (20, 18)):
+                if self.get(lx, 11, lz) == AIR:
+                    self.set(lx, 11, lz, TORCH)
+                    self.set_material((lx, 11, lz), "copper_lantern")
+        elif preset in {"crystal_canyon", "obsidian_caldera"}:
+            accent = "crystal_vein" if preset == "crystal_canyon" else "sunstone"
+            for px, pz, h in ((7, 8, 2), (24, 8, 2), (7, 23, 2), (25, 22, 1)):
+                feet = self.feet_at(px, pz)
+                if feet:
+                    for dy in range(h + 1):
+                        self.set(px, feet[1] + dy, pz, STONE)
+                        self.set_material((px, feet[1] + dy, pz), accent if dy == h else cfg["rock_mat"])
+
+        candidates = [(x, z) for x in range(4, 29) for z in range(4, 29)]
+        self.rng.shuffle(candidates)
+        trees: list[tuple[int, int]] = []
+        for x, z in candidates:
+            if 10 <= x <= 25 and 10 <= z <= 21:
+                continue
+            p = self.feet_at(x, z)
+            if not p or self.get(x, p[1] - 1, z) not in {GRASS, COBBLE, STONE}:
+                continue
+            if self.get(x, p[1] - 1, z) != GRASS:
+                self.set(x, p[1] - 1, z, GRASS)
+            if any(abs(x - tx) < 3 and abs(z - tz) < 3 for tx, tz in trees):
+                continue
+            if len(trees) < cfg["tree_cap"] and self.grow_tree(p, forced_species=cfg["species"]):
+                trees.append((x, z))
+
+        placed_boulders = 0
+        ore_cycle = cfg["ores"]
+        for x, z in candidates:
+            if 11 <= x <= 25 and 10 <= z <= 21:
+                continue
+            p = self.feet_at(x, z)
+            if not p or self.get(*p) != AIR or self.get(x, p[1] - 1, z) == WATER:
+                continue
+            if placed_boulders < (8 if preset == "flat_sandbox" else 16):
+                self.set(*p, STONE)
+                kind, mat, cap = ore_cycle[placed_boulders % len(ore_cycle)]
+                self.set_material(p, mat)
+                self.add_resource(kind, p, cap)
+                placed_boulders += 1
+            elif self.rng.random() < 0.08:
+                self.set(*p, BERRY)
+
+        # Shore clay/sand & fiber nodes + guaranteed starter berries
+        for kind, pts in {"clay": [(20, 14), (20, 15)], "sand": [(25, 14), (25, 15)]}.items():
+            for sx, sz in pts:
+                feet = self.feet_at(sx, sz)
+                if feet:
+                    sp = (sx, feet[1] - 1, sz)
+                    self.set(*sp, DIRT)
+                    self.set_material(sp, "clay_bank" if kind == "clay" else "sandy_bank")
+                    self.add_resource(kind, sp, 60)
+        for bx, bz in ((11, 21), (19, 20), (10, 18)):
+            bp = self.feet_at(bx, bz)
+            if bp and self.get(*bp) == AIR:
+                self.set(*bp, BERRY)
+        for p in [pt for pt in self.positions(GRASS) if self.get(pt[0], pt[1] + 1, pt[2]) == AIR and not (11 <= pt[0] <= 21 and 11 <= pt[2] <= 21)][:10]:
+            self.add_resource("fiber", p, 12)
+
+    def grow_tree(self, p: Pos, forced_species: str | None = None) -> bool:
         x, y, z = p
         if self.get(x, y - 1, z) not in {GRASS, DIRT}:
             return False
@@ -297,7 +448,7 @@ class World:
         if not self.inside(x, y + 5, z):
             return False
         # Stable species selection does not depend on unrelated decoration RNG calls.
-        species = ("oak", "birch", "pine", "oak", "sakura", "autumn")[(x * 7 + z * 11 + self.seed) % 6]
+        species = forced_species or ("oak", "birch", "pine", "oak", "sakura", "autumn")[(x * 7 + z * 11 + self.seed) % 6]
         bark = "birch_bark" if species == "birch" else "pine_bark" if species == "pine" else "oak_bark"
         # Leaves start high enough to preserve two-block pedestrian clearance.
         for dy in (3, 4, 5):
@@ -441,7 +592,7 @@ class World:
         w = cls.__new__(cls)
         w.seed = int(data.get("seed", 66))
         biome = str(data.get("biome", "homestead"))
-        w.biome = biome if biome in {"homestead", "market"} else "homestead"
+        w.biome = biome if biome in VALID_BIOMES else "homestead"
         w.rng = random.Random(w.seed)
         w.blocks = [int(b) if 0 <= int(b) < len(PALETTE) else AIR for b in blocks_raw]
         w.meta = [int(m) for m in meta_raw]

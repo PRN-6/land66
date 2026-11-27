@@ -11,7 +11,7 @@ from .catalog import INVENTORY_KEYS, MATERIALS, catalog_snapshot
 from .household import HomeState, Household
 from .pathfinding import astar, path_to_any
 from .world import (
-    World, Pos, PALETTE, AIR, GRASS, DIRT, STONE, WATER, LOG, LEAVES,
+    World, WORLD_PRESETS, VALID_BIOMES, Pos, PALETTE, AIR, GRASS, DIRT, STONE, WATER, LOG, LEAVES,
     PLANK, COBBLE, GLASS, DOOR, OPEN_DOOR, BED, CHEST, BENCH, TORCH,
     FARMLAND, WHEAT, BERRY, SAPLING, ROOF, FENCE,
 )
@@ -513,14 +513,14 @@ class NpcAgent:
                           and any(w.get(p[0]+dx, p[1], p[2]+dz) == AIR for dx, dz in ((1,0),(-1,0),(0,1),(0,-1))) ]
             avoid = True
         elif action == "study_gate":
-            if self.sim.biome != "homestead" or self.sim.gate_discovered:
+            if self.sim.world_id != "homestead" or self.sim.gate_discovered:
                 return False
             result = self.nearest_reachable([(10, 11, 15)], 2, avoid_target=True)
             if not result:
                 return False
             return self.make_job(action, *result)
         elif action == "build_gate":
-            if self.sim.biome != "homestead" or not self.sim.gate_discovered:
+            if self.sim.world_id != "homestead" or not self.sim.gate_discovered:
                 return False
             b = self.sim.next_gate_block()
             if not b or inv.get(b.material, 0) < b.amount:
@@ -973,20 +973,24 @@ class NpcAgent:
 
 
 class Simulation:
-    def __init__(self, seed: int = 66, biome: str = "homestead", coins: int = 250):
+    def __init__(self, seed: int = 66, biome: str = "homestead", coins: int = 250,
+                 world_id: str | None = None, world_name: str | None = None):
         self.seed, self.rng = seed, random.Random(seed + 731)
-        self.biome = biome if biome in {"homestead", "market"} else "homestead"
+        self.biome = biome if biome in VALID_BIOMES else "homestead"
+        self.world_id = (world_id or self.biome).strip().lower()
+        default_name = "Homestead" if self.world_id == "homestead" else "Market" if self.world_id == "market" else WORLD_PRESETS[self.biome]["label"]
+        self.world_name = (world_name or default_name).strip()[:40] or default_name
         self.coins = max(0, int(coins))
         self.world = World(seed, biome=self.biome)
         self.tick, self.elapsed = 0, DAY_SECONDS * .26
         self.paused, self.speed, self.weather = False, 1, "clear"
         self.weather_override = False
         self.blueprint = [] if self.biome == "market" else house_blueprint()
-        self.gate_blueprint = [] if self.biome == "market" else gate_blueprint()
+        self.gate_blueprint = gate_blueprint() if self.world_id == "homestead" else []
         self.gate_clues: dict[str, bool] = (
-            {"anchor": True, "conduit": True, "core": True}
-            if self.biome == "market"
-            else {"anchor": False, "conduit": False, "core": False}
+            {"anchor": False, "conduit": False, "core": False}
+            if self.world_id == "homestead"
+            else {"anchor": True, "conduit": True, "core": True}
         )
         self.farm_sites = [] if self.biome == "market" else [(x, 10, z) for x in (19, 20) for z in range(18, 22)]
         self.crop_age: dict[Pos, float] = {}
@@ -999,7 +1003,7 @@ class Simulation:
         self.entity_counter = 0
         self.agent_counter = 1
         self.home = HomeState()
-        start = (16, 11, 22) if self.biome == "market" else (16, 11, 20)
+        start = (16, 11, 22) if self.biome == "market" else (self.world.feet_at(16, 20) or (16, 11, 20))
         self.agents: dict[str, NpcAgent] = {
             "aiden": NpcAgent(self, "aiden", "Aiden", role="pioneer", variant=0, start_pos=start),
         }
@@ -1008,6 +1012,11 @@ class Simulation:
             self.primary.thought = "Welcome to the Sky Market! I can buy marble, gems, tools, and adopt pets here."
             self.primary.remember("Arrived at the floating Sky Market plaza.")
             self._seed_market_merchants()
+        elif self.world_id != "homestead":
+            preset_label = WORLD_PRESETS[self.biome]["label"]
+            self.primary.current_goal = f"Explore {self.world_name} and gather resources"
+            self.primary.thought = f"I arrived in {self.world_name} ({preset_label}). Time to survey this new world!"
+            self.primary.remember(f"Awakened inside God-created world '{self.world_name}' ({preset_label}).")
 
     def _seed_market_merchants(self) -> None:
         stalls = [
@@ -1166,7 +1175,7 @@ class Simulation:
 
     @property
     def gate_discovered(self) -> bool:
-        return self.biome == "market" or all(self.gate_clues.values())
+        return self.world_id != "homestead" or all(self.gate_clues.values())
 
     def gate_progress(self) -> float:
         if not self.gate_blueprint:
@@ -1175,7 +1184,7 @@ class Simulation:
 
     @property
     def gate_unlocked(self) -> bool:
-        return self.biome == "market" or self.gate_progress() >= 100.0
+        return self.world_id != "homestead" or self.gate_progress() >= 100.0
 
     def decipher_gate_rune(self, rune: str, answer: str) -> tuple[bool, str]:
         rune_key = rune.strip().lower()
@@ -1292,7 +1301,8 @@ class Simulation:
         return dict(
             tick=self.tick, day=self.day, time_of_day=self.time_of_day, clock_str=self.clock_str,
             phase=self.phase, weather=self.weather, paused=self.paused, speed=self.speed, seed=self.seed,
-            world_id=self.biome, coins=self.coins, gate=self.gate_snapshot(),
+            world_id=self.world_id, world_name=self.world_name, world_preset=self.biome,
+            coins=self.coins, gate=self.gate_snapshot(),
             npc=focus.snapshot(),
             agents=[a.snapshot() for a in self.agents.values()],
             stats=dict(
@@ -1570,7 +1580,7 @@ class Simulation:
         self.primary.remember(f"A {kind} named {name} appeared on the island.")
 
     def update_entities(self, dt: float) -> None:
-        if self.biome == "homestead" and self.tick >= 200 and self.tick % 400 == 0 and len(self.entities) < 4:
+        if self.biome not in {"market", "flat_sandbox"} and self.tick >= 200 and self.tick % 400 == 0 and len(self.entities) < 4:
             wild_kind = ("deer", "sheep", "fox", "duck")[self.tick // 400 % 4]
             spot = self._find_open_spot()
             if spot:
@@ -1638,6 +1648,8 @@ class Simulation:
         """Export the full simulation state for durable save-file persistence."""
         return {
             "save_version": 1,
+            "world_id": self.world_id,
+            "world_name": self.world_name,
             "biome": self.biome,
             "coins": int(self.coins),
             "gate_clues": dict(self.gate_clues),
@@ -1683,7 +1695,11 @@ class Simulation:
         sim.rng = random.Random(sim.seed + 731 + sim.tick)
         sim.world = World.from_state(data["world"])
         raw_biome = str(data.get("biome", sim.world.biome))
-        sim.biome = raw_biome if raw_biome in {"homestead", "market"} else "homestead"
+        sim.biome = raw_biome if raw_biome in VALID_BIOMES else "homestead"
+        raw_wid = str(data.get("world_id", "")).strip().lower()
+        sim.world_id = raw_wid or sim.biome
+        default_name = "Homestead" if sim.world_id == "homestead" else "Market" if sim.world_id == "market" else WORLD_PRESETS[sim.biome]["label"]
+        sim.world_name = str(data.get("world_name", default_name)).strip()[:40] or default_name
         sim.coins = max(0, int(data.get("coins", 250)))
         sim.elapsed = max(0.0, float(data.get("elapsed", DAY_SECONDS * 0.26)))
         sim.paused = bool(data.get("paused", False))
@@ -1693,12 +1709,12 @@ class Simulation:
         sim.weather = raw_weather if raw_weather in {"clear", "rain", "storm"} else "clear"
         sim.weather_override = bool(data.get("weather_override", False))
         sim.blueprint = [] if sim.biome == "market" else house_blueprint()
-        sim.gate_blueprint = [] if sim.biome == "market" else gate_blueprint()
+        sim.gate_blueprint = gate_blueprint() if sim.world_id == "homestead" else []
         raw_clues = data.get("gate_clues") if isinstance(data.get("gate_clues"), dict) else {}
         sim.gate_clues = (
-            {"anchor": True, "conduit": True, "core": True}
-            if sim.biome == "market"
-            else {k: bool(raw_clues.get(k, False)) for k in ("anchor", "conduit", "core")}
+            {k: bool(raw_clues.get(k, False)) for k in ("anchor", "conduit", "core")}
+            if sim.world_id == "homestead"
+            else {"anchor": True, "conduit": True, "core": True}
         )
         sim.farm_sites = [] if sim.biome == "market" else [(x, 10, z) for x in (19, 20) for z in range(18, 22)]
         sim.crop_age = _decode_pos_map(data.get("crop_age", []))

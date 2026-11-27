@@ -3,6 +3,7 @@ import {
   Box,
   Brain,
   Eraser,
+  Globe,
   MousePointer,
   Plus,
   Send,
@@ -34,6 +35,7 @@ interface GodDockProps {
   onOpenBrainForAgent: (agentId: string) => void;
   onCreateAgent: (payload: { name?: string; role: AgentRole }) => void;
   onDeleteAgent: (agentId: string) => void;
+  onOpenCreateWorldModal: () => void;
   onGodIntervene: (
     action:
       | 'set_time'
@@ -108,6 +110,7 @@ export function GodDock({
   onOpenBrainForAgent,
   onCreateAgent,
   onDeleteAgent,
+  onOpenCreateWorldModal,
   onGodIntervene,
 }: GodDockProps) {
   const [npcName, setNpcName] = useState('');
@@ -430,11 +433,25 @@ export function GodDock({
       {/* World Controls Tray */}
       {tray === 'world' && (
         <div className="w-[24rem] max-w-[calc(100vw-1.5rem)] p-3 rounded-2xl bg-neutral-950/88 backdrop-blur-2xl border border-white/10 shadow-2xl space-y-2.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-medium text-neutral-300">World & Influence</span>
-            <button onClick={() => onSetTray(null)} className="text-neutral-500 hover:text-white cursor-pointer">
-              <X className="w-3.5 h-3.5" />
-            </button>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium text-neutral-300">
+              World · {state.world_name ?? state.world_id ?? 'Homestead'}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => {
+                  onSetTray(null);
+                  onOpenCreateWorldModal();
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white text-neutral-950 hover:bg-neutral-200 text-[10px] font-semibold cursor-pointer"
+              >
+                <Globe className="w-3 h-3" />
+                Create World
+              </button>
+              <button onClick={() => onSetTray(null)} className="text-neutral-500 hover:text-white cursor-pointer">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-4 gap-1">

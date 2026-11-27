@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,8 +17,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from .brain import Brain
-from .models import ConfigPatch, Control, CreateAgentRequest, Decision, Intervention, Provider
+from .models import ConfigPatch, Control, CreateAgentRequest, CreateWorldRequest, Decision, Intervention, Provider
 from .simulation import Simulation
+from .world import VALID_BIOMES, WORLD_PRESETS
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 logger = logging.getLogger("land66")
@@ -26,18 +28,22 @@ logger = logging.getLogger("land66")
 class Runtime:
     def __init__(self, seed=66, brain: Brain | None = None):
         self.worlds: dict[str, Simulation] = {
-            "homestead": Simulation(seed, biome="homestead"),
-            "market": Simulation(seed + 100, biome="market"),
+            "homestead": Simulation(seed, biome="homestead", world_id="homestead", world_name="Homestead"),
+            "market": Simulation(seed + 100, biome="market", world_id="market", world_name="Market"),
         }
         self.active_world_id = "homestead"
         self.default_timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "45"))
-        self.brains: dict[str, Brain] = {
-            "aiden": brain or Brain(timeout=self.default_timeout),
+        self.brains_by_world: dict[str, dict[str, Brain]] = {
+            "homestead": {"aiden": brain or Brain(timeout=self.default_timeout)},
+            "market": {"aiden": Brain(timeout=self.default_timeout)},
         }
         self.clients: set[asyncio.Queue] = set()
         self.thinking_tasks: dict[str, asyncio.Task] = {}
         self.loop_task: asyncio.Task | None = None
-        self.next_think_ticks: dict[str, int] = {"aiden": 0}
+        self.next_ticks_by_world: dict[str, dict[str, int]] = {
+            "homestead": {"aiden": 0},
+            "market": {"aiden": 0},
+        }
 
     @property
     def sim(self) -> Simulation:
@@ -45,8 +51,24 @@ class Runtime:
 
     @sim.setter
     def sim(self, s: Simulation) -> None:
-        self.active_world_id = s.biome
+        self.active_world_id = s.world_id
         self.worlds[self.active_world_id] = s
+
+    @property
+    def brains(self) -> dict[str, Brain]:
+        return self.brains_by_world.setdefault(self.active_world_id, {})
+
+    @brains.setter
+    def brains(self, mapping: dict[str, Brain]) -> None:
+        self.brains_by_world[self.active_world_id] = mapping
+
+    @property
+    def next_think_ticks(self) -> dict[str, int]:
+        return self.next_ticks_by_world.setdefault(self.active_world_id, {})
+
+    @next_think_ticks.setter
+    def next_think_ticks(self, mapping: dict[str, int]) -> None:
+        self.next_ticks_by_world[self.active_world_id] = mapping
 
     @property
     def brain(self) -> Brain:
@@ -93,6 +115,32 @@ class Runtime:
                 last_error=b.last_error,
             )
 
+    def worlds_summary(self) -> list[dict]:
+        homestead_unlocked = self.worlds["homestead"].gate_unlocked if "homestead" in self.worlds else False
+        return [
+            {
+                "id": wid,
+                "name": sim.world_name,
+                "preset": sim.biome,
+                "preset_label": WORLD_PRESETS.get(sim.biome, {}).get("label", sim.biome),
+                "seed": sim.seed,
+                "locked": wid == "market" and not homestead_unlocked,
+                "builtin": wid in {"homestead", "market"},
+                "agents_count": len(sim.agents),
+            }
+            for wid, sim in self.worlds.items()
+        ]
+
+    def snapshot(self) -> dict:
+        snap = self.sim.snapshot()
+        snap["worlds"] = self.worlds_summary()
+        return snap
+
+    def world_init_payload(self) -> dict:
+        payload = self.sim.world_init()
+        payload["state"] = self.snapshot()
+        return payload
+
     def publish(self, message):
         for queue in list(self.clients):
             if queue.full():
@@ -105,7 +153,7 @@ class Runtime:
 
     def broadcast_tick(self):
         self.sync_status()
-        self.publish(dict(type="tick_update", block_updates=self.sim.world.drain_updates(), state=self.sim.snapshot()))
+        self.publish(dict(type="tick_update", block_updates=self.sim.world.drain_updates(), state=self.snapshot()))
 
     async def cancel_thinking(self, agent_id: str | None = None):
         targets = [agent_id] if agent_id else list(self.thinking_tasks.keys())
@@ -121,20 +169,96 @@ class Runtime:
 
     async def reset(self, seed):
         await self.cancel_thinking()
-        primary_brain = self.brains["aiden"]
+        primary_brain = self.brains.get("aiden") or Brain(timeout=self.default_timeout)
         coins = self.sim.coins
-        biome = self.active_world_id
-        self.worlds[biome] = Simulation(seed, biome=biome, coins=coins)
+        biome = self.sim.biome
+        wid = self.sim.world_id
+        wname = self.sim.world_name
+        self.worlds[wid] = Simulation(seed, biome=biome, coins=coins, world_id=wid, world_name=wname)
         self.brains = {"aiden": primary_brain}
         self.next_think_ticks = {"aiden": 0}
         self.sync_status()
-        self.publish(self.sim.world_init())
+        self.publish(self.world_init_payload())
+
+    async def create_world(
+        self,
+        name: str | None = None,
+        preset: str = "homestead",
+        seed: int | None = None,
+        starter_name: str | None = None,
+        starter_role: str = "pioneer",
+        switch: bool = True,
+    ) -> tuple[dict, dict]:
+        clean_preset = preset.strip().lower()
+        if clean_preset not in VALID_BIOMES:
+            raise ValueError(f"Unknown world preset '{preset}'. Valid presets: {', '.join(sorted(VALID_BIOMES))}")
+        if len(self.worlds) >= 12:
+            raise ValueError("Maximum 12 floating worlds reached; delete a custom world before creating another.")
+
+        clean_name = (name or "").strip()[:40]
+        if not clean_name:
+            base_label = WORLD_PRESETS[clean_preset]["label"]
+            clean_name = f"{base_label} {len(self.worlds) + 1}"
+        base_slug = re.sub(r"[^a-z0-9]+", "-", clean_name.lower()).strip("-") or f"world-{len(self.worlds) + 1}"
+        world_id = base_slug
+        suffix = 2
+        while world_id in self.worlds:
+            world_id = f"{base_slug[:28]}-{suffix}"
+            suffix += 1
+
+        chosen_seed = int(seed) if seed is not None else self.sim.seed + 137 * len(self.worlds)
+        new_sim = Simulation(
+            seed=chosen_seed,
+            biome=clean_preset,
+            coins=self.sim.coins,
+            world_id=world_id,
+            world_name=clean_name,
+        )
+        s_name = (starter_name or "").strip()[:32]
+        if s_name:
+            new_sim.primary.name = s_name
+        new_sim.primary.role = starter_role
+
+        self.worlds[world_id] = new_sim
+        self.brains_by_world[world_id] = {"aiden": Brain(timeout=self.default_timeout)}
+        self.next_ticks_by_world[world_id] = {"aiden": 0}
+
+        if switch:
+            await self.cancel_thinking()
+            self.active_world_id = world_id
+            self.sync_status()
+            self.publish(self.world_init_payload())
+        else:
+            self.broadcast_tick()
+
+        summary = next(w for w in self.worlds_summary() if w["id"] == world_id)
+        return summary, self.snapshot()
+
+    async def delete_world(self, world_id: str) -> dict:
+        wid = world_id.strip().lower()
+        if wid in {"homestead", "market"}:
+            raise ValueError(f"Cannot delete built-in world '{wid}'")
+        if wid not in self.worlds:
+            raise KeyError(f"Unknown world '{world_id}'")
+        was_active = self.active_world_id == wid
+        if was_active:
+            await self.cancel_thinking()
+            self.active_world_id = "homestead"
+        self.worlds.pop(wid, None)
+        self.brains_by_world.pop(wid, None)
+        self.next_ticks_by_world.pop(wid, None)
+        self.sync_status()
+        if was_active:
+            self.publish(self.world_init_payload())
+        else:
+            self.broadcast_tick()
+        return self.snapshot()
 
     async def switch_world(self, target_world: str) -> dict:
-        if target_world not in {"homestead", "market"}:
-            raise ValueError("world must be 'homestead' or 'market'")
+        if target_world not in self.worlds:
+            raise ValueError(f"Unknown world '{target_world}'")
         if target_world == self.active_world_id:
-            return self.sim.snapshot()
+            return self.snapshot()
         if target_world == "market" and not self.worlds["homestead"].gate_unlocked:
             raise PermissionError("Decipher the 3 runes and build the 7-block Sky Teleport Gate on Homestead first.")
         await self.cancel_thinking()
@@ -145,14 +269,15 @@ class Runtime:
         dst.primary.inventory = dict(src.primary.inventory)
         dst.primary.needs = dict(src.primary.needs)
         dst.primary.household.tools = dict(src.primary.household.tools)
-        for aid in dst.agents:
-            if aid not in self.brains:
-                self.brains[aid] = Brain(timeout=self.default_timeout)
         self.active_world_id = target_world
+        dst_brains = self.brains_by_world.setdefault(target_world, {})
+        for aid in dst.agents:
+            if aid not in dst_brains:
+                dst_brains[aid] = Brain(timeout=self.default_timeout)
         self.next_think_ticks = {aid: dst.tick for aid in dst.agents}
         self.sync_status()
-        self.publish(self.sim.world_init())
-        return self.sim.snapshot()
+        self.publish(self.world_init_payload())
+        return self.snapshot()
 
     def export_save(self, name: str | None = None) -> dict:
         from datetime import datetime, timezone
@@ -197,8 +322,8 @@ class Runtime:
         self.brains = new_brains
         self.next_think_ticks = new_ticks
         self.sync_status()
-        self.publish(self.sim.world_init())
-        return self.sim.snapshot()
+        self.publish(self.world_init_payload())
+        return self.snapshot()
 
     def complete_thinking(self):
         for aid, task in list(self.thinking_tasks.items()):
@@ -257,7 +382,7 @@ class Runtime:
                 logger.exception("Simulation tick failed; pausing for inspection")
                 self.sim.paused = True
                 self.sim.llm_status["last_error"] = "Simulation paused after an internal error; see server logs."
-                self.publish(dict(type="tick_update", block_updates=self.sim.world.drain_updates(), state=self.sim.snapshot()))
+                self.publish(dict(type="tick_update", block_updates=self.sim.world.drain_updates(), state=self.snapshot()))
             await asyncio.sleep(max(.001, .1 - (time.monotonic() - started)))
 
     async def close(self):
@@ -293,7 +418,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
     @app.get("/api/state")
     async def state():
         runtime().sync_status()
-        return runtime().sim.snapshot()
+        return runtime().snapshot()
 
     @app.get("/api/agents")
     async def list_agents():
@@ -424,9 +549,9 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
             rt.sim.speed = command.speed
         elif command.action == "reset":
             await rt.reset(command.seed if command.seed is not None else rt.sim.seed)
-            return rt.sim.snapshot()
+            return rt.snapshot()
         rt.broadcast_tick()
-        return rt.sim.snapshot()
+        return rt.snapshot()
 
     @app.get("/api/sim/save")
     def download_save():
@@ -492,6 +617,42 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
             raise HTTPException(422, str(err))
         return {"ok": True, "slot": removed}
 
+    @app.get("/api/worlds")
+    def list_worlds():
+        rt = runtime()
+        return {
+            "active_world": rt.active_world_id,
+            "worlds": rt.worlds_summary(),
+            "presets": [{"id": pid, **meta} for pid, meta in WORLD_PRESETS.items()],
+        }
+
+    @app.post("/api/world/create")
+    async def create_world(req: CreateWorldRequest):
+        rt = runtime()
+        try:
+            summary, snap = await rt.create_world(
+                name=req.name,
+                preset=req.preset,
+                seed=req.seed,
+                starter_name=req.starter_name,
+                starter_role=req.starter_role,
+                switch=req.switch,
+            )
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        return {"ok": True, "world": summary, "state": snap, "worlds": rt.worlds_summary()}
+
+    @app.delete("/api/world/{world_id}")
+    async def remove_world(world_id: str):
+        rt = runtime()
+        try:
+            snap = await rt.delete_world(world_id)
+        except KeyError as err:
+            raise HTTPException(404, str(err))
+        except ValueError as err:
+            raise HTTPException(422, str(err))
+        return {"ok": True, "deleted": world_id, "state": snap, "worlds": rt.worlds_summary()}
+
     @app.post("/api/world/switch")
     async def switch_world(req: dict):
         rt = runtime()
@@ -516,7 +677,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
             raise HTTPException(422, str(err))
         if rt.active_world_id == "homestead":
             rt.broadcast_tick()
-        return {"ok": True, "correct": correct, "feedback": feedback, "gate": home_sim.gate_snapshot(), "state": rt.sim.snapshot()}
+        return {"ok": True, "correct": correct, "feedback": feedback, "gate": home_sim.gate_snapshot(), "state": rt.snapshot()}
 
     @app.post("/api/gate/study")
     def gate_study(req: dict | None = None):
@@ -526,12 +687,12 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         agent_id = (req or {}).get("agent_id")
         ag = rt.sim._resolve_agent(agent_id)
         if rt.sim.gate_discovered:
-            return {"ok": True, "message": "All 3 Teleport Gate runes are already deciphered!", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+            return {"ok": True, "message": "All 3 Teleport Gate runes are already deciphered!", "gate": rt.sim.gate_snapshot(), "state": rt.snapshot()}
         started = ag.start_action("study_gate")
         if not started:
             raise HTTPException(422, f"{ag.name} could not find a clear path to the Teleport Gate plinth.")
         rt.broadcast_tick()
-        return {"ok": True, "message": f"{ag.name} is walking over to study the Ancient Gate ruins.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+        return {"ok": True, "message": f"{ag.name} is walking over to study the Ancient Gate ruins.", "gate": rt.sim.gate_snapshot(), "state": rt.snapshot()}
 
     @app.post("/api/gate/build")
     def gate_build(req: dict | None = None):
@@ -547,31 +708,31 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
                 if not rt.sim.gate_discovered:
                     if ag.start_action("study_gate"):
                         rt.broadcast_tick()
-                        return {"ok": True, "message": f"{ag.name} is studying the Gate runes.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                        return {"ok": True, "message": f"{ag.name} is studying the Gate runes.", "gate": rt.sim.gate_snapshot(), "state": rt.snapshot()}
                 nxt = rt.sim.next_gate_block()
                 if not nxt:
-                    return {"ok": True, "message": "Teleport Gate is already complete!", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                    return {"ok": True, "message": "Teleport Gate is already complete!", "gate": rt.sim.gate_snapshot(), "state": rt.snapshot()}
                 if ag.inventory.get(nxt.material, 0) >= nxt.amount and ag.start_action("build_gate"):
                     rt.broadcast_tick()
-                    return {"ok": True, "message": f"{ag.name} is assembling {nxt.surface_material.replace('_', ' ')} onto the gate.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                    return {"ok": True, "message": f"{ag.name} is assembling {nxt.surface_material.replace('_', ' ')} onto the gate.", "gate": rt.sim.gate_snapshot(), "state": rt.snapshot()}
                 if nxt.material == "sunstone":
                     if ag.inventory.get("crystal", 0) >= 1 and ag.inventory.get("gold_ore", 0) >= 1 and ag.start_action("craft", {"recipe": "sunstone"}):
                         rt.broadcast_tick()
-                        return {"ok": True, "message": f"{ag.name} is forging a Sunstone core from Crystal + Gold Ore.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                        return {"ok": True, "message": f"{ag.name} is forging a Sunstone core from Crystal + Gold Ore.", "gate": rt.sim.gate_snapshot(), "state": rt.snapshot()}
                     target_res = "gold_ore" if ag.inventory.get("gold_ore", 0) < 1 else "crystal"
                     if ag.start_action("gather", {"resource": target_res}):
                         rt.broadcast_tick()
-                        return {"ok": True, "message": f"{ag.name} is gathering {target_res.replace('_', ' ')} to craft Sunstone.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                        return {"ok": True, "message": f"{ag.name} is gathering {target_res.replace('_', ' ')} to craft Sunstone.", "gate": rt.sim.gate_snapshot(), "state": rt.snapshot()}
                 if ag.start_action("gather", {"resource": nxt.material}):
                     rt.broadcast_tick()
-                    return {"ok": True, "message": f"{ag.name} is gathering {nxt.material.replace('_', ' ')} for the Gate.", "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+                    return {"ok": True, "message": f"{ag.name} is gathering {nxt.material.replace('_', ' ')} for the Gate.", "gate": rt.sim.gate_snapshot(), "state": rt.snapshot()}
                 raise ValueError(f"{ag.name} cannot reach more {nxt.material.replace('_', ' ')} nodes right now.")
             placed = rt.sim.assemble_gate_block(agent_id)
         except ValueError as err:
             raise HTTPException(422, str(err))
         rt.broadcast_tick()
         msg = "Sky Teleport Gate activated! Travel to Sky Market is unlocked." if rt.sim.gate_unlocked else f"Added {placed.surface_material.replace('_', ' ')} to the Teleport Gate."
-        return {"ok": True, "message": msg, "gate": rt.sim.gate_snapshot(), "state": rt.sim.snapshot()}
+        return {"ok": True, "message": msg, "gate": rt.sim.gate_snapshot(), "state": rt.snapshot()}
 
     @app.post("/api/npc/action")
     def dispatch_npc_action(req: dict):
@@ -599,7 +760,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         if not ok:
             raise HTTPException(422, f"{ag.name} cannot start '{action}' right now (missing materials, weapon, or reachable target).")
         rt.broadcast_tick()
-        return {"ok": True, "action": action, "agent_id": ag.id, "state": rt.sim.snapshot()}
+        return {"ok": True, "action": action, "agent_id": ag.id, "state": rt.snapshot()}
 
     @app.get("/api/market/catalog")
     def get_market_catalog():
@@ -621,7 +782,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         except ValueError as err:
             raise HTTPException(422, str(err))
         rt.broadcast_tick()
-        return {"ok": True, "message": msg, **info, "state": rt.sim.snapshot()}
+        return {"ok": True, "message": msg, **info, "state": rt.snapshot()}
 
     @app.post("/api/market/sell")
     def market_sell(req: dict):
@@ -637,17 +798,31 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         except ValueError as err:
             raise HTTPException(422, str(err))
         rt.broadcast_tick()
-        return {"ok": True, "message": msg, **info, "state": rt.sim.snapshot()}
+        return {"ok": True, "message": msg, **info, "state": rt.snapshot()}
 
     @app.post("/api/god/intervene")
     async def intervene(command: Intervention):
         rt = runtime()
+        if command.action == "create_world":
+            val = command.value if isinstance(command.value, dict) else {}
+            try:
+                _, snap = await rt.create_world(
+                    name=val.get("name"),
+                    preset=str(val.get("preset", val.get("biome", "homestead"))),
+                    seed=val.get("seed"),
+                    starter_name=val.get("starter_name"),
+                    starter_role=str(val.get("starter_role", "pioneer")),
+                    switch=bool(val.get("switch", True)),
+                )
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(422, str(exc) or "Invalid world creation parameters")
+            return snap
         try:
             rt.sim.intervene(command.action, command.value, agent_id=command.agent_id)
         except (ValueError, TypeError) as exc:
             raise HTTPException(422, str(exc) or "Invalid intervention value or unavailable target")
         rt.broadcast_tick()
-        return rt.sim.snapshot()
+        return rt.snapshot()
 
     @app.websocket("/ws")
     async def websocket(ws: WebSocket):
@@ -655,7 +830,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         rt = runtime()
         queue = asyncio.Queue(maxsize=64)
         rt.sync_status()
-        queue.put_nowait(rt.sim.world_init())
+        queue.put_nowait(rt.world_init_payload())
         rt.clients.add(queue)
 
         async def send(tg: anyio.abc.TaskGroup):

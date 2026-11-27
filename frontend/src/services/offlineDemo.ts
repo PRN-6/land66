@@ -22,8 +22,10 @@ import {
   type WeatherType,
   type WorldEntity,
   type WorldInitMessage,
+  type WorldPresetId,
   type WorldSavePayload,
   type WorldStateSnapshot,
+  type WorldSummary,
 } from '../types/world';
 
 function mulberry32(seed: number): () => number {
@@ -190,7 +192,19 @@ interface CachedDemoWorld {
   waypoints: Array<{ x: number; z: number; action: string; goal: string; thought: string }>;
   entityCounter: number;
   agentCounter: number;
+  preset: WorldPresetId | string;
+  name: string;
 }
+
+const DEMO_PRESET_LABELS: Record<string, string> = {
+  homestead: 'Lush Island',
+  alpine_peaks: 'Alpine Peaks',
+  sakura_grove: 'Sakura Sanctuary',
+  crystal_canyon: 'Crystal Canyon',
+  obsidian_caldera: 'Volcanic Caldera',
+  flat_sandbox: 'Blank Canvas',
+  market: 'Sky Market Bazaar',
+};
 
 const DEMO_GATE_ARCH: Array<{ x: number; y: number; z: number; item: string; surface: string }> = [
   { x: 10, y: 11, z: 14, item: 'obsidian', surface: 'obsidian' },
@@ -207,12 +221,15 @@ export class OfflineDemoSimulator {
   private blockMeta = new Uint8Array(WORLD_VOLUME);
   private blockMaterials: string[] = new Array(WORLD_VOLUME).fill('');
   private activeWorldId: FloatingWorldId = 'homestead';
+  private activeWorldName = 'Homestead';
+  private activePreset: WorldPresetId | string = 'homestead';
+  private worldRegistry: Array<{ id: string; name: string; preset: string; seed: number; builtin: boolean }> = [];
   private gateClues: { anchor: boolean; conduit: boolean; core: boolean } = {
     anchor: false,
     conduit: false,
     core: false,
   };
-  private cachedWorlds: Partial<Record<FloatingWorldId, CachedDemoWorld>> = {};
+  private cachedWorlds: Record<string, CachedDemoWorld> = {};
   private rng = mulberry32(6601);
   private state: WorldStateSnapshot;
   private surfaceY = new Int8Array(WORLD_WIDTH * WORLD_DEPTH);
@@ -229,11 +246,23 @@ export class OfflineDemoSimulator {
 
   constructor(seed = 6601) {
     this.activeWorldId = 'homestead';
-    this.state = this.createInitialState(seed, 'homestead', 250);
+    this.activeWorldName = 'Homestead';
+    this.activePreset = 'homestead';
+    this.worldRegistry = [
+      { id: 'homestead', name: 'Homestead', preset: 'homestead', seed, builtin: true },
+      { id: 'market', name: 'Market', preset: 'market', seed: seed + 100, builtin: true },
+    ];
+    this.state = this.createInitialState(seed, 'homestead', 250, 'Homestead', 'homestead');
     this.generateIsland(seed);
   }
 
-  private createInitialState(seed: number, worldId: FloatingWorldId = 'homestead', coins = 250): WorldStateSnapshot {
+  private createInitialState(
+    seed: number,
+    worldId: FloatingWorldId = 'homestead',
+    coins = 250,
+    worldName = 'Homestead',
+    worldPreset: string = worldId,
+  ): WorldStateSnapshot {
     return {
       tick: 0,
       day: 1,
@@ -245,6 +274,8 @@ export class OfflineDemoSimulator {
       speed: 1,
       seed,
       world_id: worldId,
+      world_name: worldName,
+      world_preset: worldPreset,
       coins,
       npc: {
         id: 'aiden',
@@ -345,11 +376,42 @@ export class OfflineDemoSimulator {
     this.state.agents = [primaryAgent, ...extras];
     this.state.stats.agents_count = this.state.agents.length;
     this.state.gate = this.getGateState();
+    this.state.world_id = this.activeWorldId;
+    this.state.world_name = this.activeWorldName;
+    this.state.world_preset = this.activePreset;
+    this.state.worlds = this.worldsSummary();
     return structuredClone(this.state);
   }
 
+  public worldsSummary(): WorldSummary[] {
+    const homeLocked = this.activeWorldId === 'homestead'
+      ? !this.getGateState().unlocked
+      : !(
+          this.gateClues.anchor &&
+          this.gateClues.conduit &&
+          this.gateClues.core &&
+          (() => {
+            const hc = this.cachedWorlds.homestead;
+            if (!hc) return true;
+            return DEMO_GATE_ARCH.every((p) => {
+              const idx = blockIndex(p.x, p.y, p.z);
+              return hc.blocks[idx] === BlockId.STONE && hc.blockMaterials[idx] === p.surface;
+            });
+          })()
+        );
+    return this.worldRegistry.map((w) => ({
+      id: w.id,
+      name: w.name,
+      preset: w.preset,
+      preset_label: DEMO_PRESET_LABELS[w.preset] ?? w.preset,
+      seed: w.seed,
+      builtin: w.builtin,
+      locked: w.id === 'market' ? homeLocked : false,
+    }));
+  }
+
   public getGateState(): TeleportGateState {
-    if (this.activeWorldId === 'market') {
+    if (this.activeWorldId !== 'homestead') {
       return {
         discovered: true,
         unlocked: true,
@@ -564,31 +626,27 @@ export class OfflineDemoSimulator {
 
   public reset(seed = Math.floor(Math.random() * 9000) + 1000): WorldInitMessage {
     const coins = this.state.coins ?? 250;
-    this.state = this.createInitialState(seed, this.activeWorldId, coins);
+    this.state = this.createInitialState(seed, this.activeWorldId, coins, this.activeWorldName, this.activePreset);
     this.demoEntities = [];
     this.extraAgents = [];
     this.entityCounter = 0;
     this.agentCounter = 1;
+    const reg = this.worldRegistry.find((w) => w.id === this.activeWorldId);
+    if (reg) reg.seed = seed;
     if (this.activeWorldId === 'homestead') {
       this.gateClues = { anchor: false, conduit: false, core: false };
+    }
+    if (this.activePreset === 'market') {
+      this.generateMarketIsland(seed);
+    } else if (this.activePreset === 'homestead') {
       this.generateIsland(seed);
     } else {
-      this.generateMarketIsland(seed);
+      this.generatePresetIsland(this.activePreset, seed);
     }
     return this.getInitMessage();
   }
 
-  public switchWorld(target: FloatingWorldId): WorldInitMessage {
-    if (target === this.activeWorldId) {
-      return this.getInitMessage();
-    }
-    if (target === 'market' && !this.getGateState().unlocked) {
-      throw new Error('Decipher and build the Sky Teleport Gate on Homestead Island first.');
-    }
-    const prevCoins = this.state.coins ?? 250;
-    const prevInv = { ...this.state.npc.inventory };
-    const prevNeeds = { ...this.state.npc.needs };
-
+  private cacheCurrentWorld(): void {
     this.cachedWorlds[this.activeWorldId] = {
       blocks: new Uint8Array(this.blocks),
       blockMeta: new Uint8Array(this.blockMeta),
@@ -600,9 +658,130 @@ export class OfflineDemoSimulator {
       waypoints: structuredClone(this.waypoints),
       entityCounter: this.entityCounter,
       agentCounter: this.agentCounter,
+      preset: this.activePreset,
+      name: this.activeWorldName,
     };
+  }
+
+  public createWorld(payload: {
+    name?: string;
+    preset: WorldPresetId | string;
+    seed?: number;
+    starter_name?: string;
+    starter_role?: AgentRole;
+    switch?: boolean;
+  }): WorldInitMessage | null {
+    if (this.worldRegistry.length >= 12) {
+      throw new Error('Maximum 12 floating worlds reached.');
+    }
+    const preset = String(payload.preset || 'homestead');
+    const label = DEMO_PRESET_LABELS[preset] ?? 'Floating Island';
+    const cleanName = (payload.name?.trim() || `${label} ${this.worldRegistry.length + 1}`).slice(0, 40);
+    const baseSlug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `world-${this.worldRegistry.length + 1}`;
+    let wid = baseSlug;
+    let suffix = 2;
+    while (this.worldRegistry.some((w) => w.id === wid)) {
+      wid = `${baseSlug.slice(0, 28)}-${suffix}`;
+      suffix += 1;
+    }
+    const chosenSeed = Number.isFinite(payload.seed) ? Number(payload.seed) : this.state.seed + 137 * this.worldRegistry.length;
+    this.worldRegistry.push({ id: wid, name: cleanName, preset, seed: chosenSeed, builtin: false });
+
+    const enter = payload.switch ?? true;
+    const prevCoins = this.state.coins ?? 250;
+    const prevHomeState = structuredClone(this.state);
+    this.cacheCurrentWorld();
+
+    this.activeWorldId = wid;
+    this.activeWorldName = cleanName;
+    this.activePreset = preset;
+    this.demoEntities = [];
+    this.extraAgents = [];
+    this.entityCounter = 0;
+    this.agentCounter = 1;
+    this.state = this.createInitialState(chosenSeed, wid, prevCoins, cleanName, preset);
+    if (payload.starter_name?.trim()) {
+      this.state.npc.name = payload.starter_name.trim().slice(0, 32);
+    }
+    if (payload.starter_role) {
+      this.state.npc.role = payload.starter_role;
+    }
+    if (preset === 'market') {
+      this.generateMarketIsland(chosenSeed);
+    } else if (preset === 'homestead') {
+      this.generateIsland(chosenSeed);
+    } else {
+      this.generatePresetIsland(preset, chosenSeed);
+    }
+    if (wid !== 'homestead') {
+      this.state.npc.current_goal = `Explore ${cleanName} and thrive`;
+      this.state.npc.thought = `Welcome to ${cleanName} (${label})! Ready for God's creations.`;
+      this.state.npc.memories.unshift({
+        day: 1,
+        clock: '06:28',
+        text: `Arrived in God-created world "${cleanName}" (${label}).`,
+      });
+    }
+    this.cacheCurrentWorld();
+
+    if (enter) {
+      return this.getInitMessage();
+    }
+
+    // Restore previous active world if user chose not to switch immediately
+    const prevId = prevHomeState.world_id ?? 'homestead';
+    const back = this.cachedWorlds[prevId];
+    if (back) {
+      this.activeWorldId = prevId;
+      this.activeWorldName = back.name;
+      this.activePreset = back.preset;
+      this.blocks = new Uint8Array(back.blocks);
+      this.blockMeta = new Uint8Array(back.blockMeta);
+      this.blockMaterials = [...back.blockMaterials];
+      this.surfaceY = new Int8Array(back.surfaceY);
+      this.state = structuredClone(back.state);
+      this.demoEntities = structuredClone(back.entities);
+      this.extraAgents = structuredClone(back.extraAgents);
+      this.waypoints = structuredClone(back.waypoints);
+      this.entityCounter = back.entityCounter;
+      this.agentCounter = back.agentCounter;
+    }
+    return null;
+  }
+
+  public deleteWorld(worldId: string): WorldInitMessage | null {
+    const wid = worldId.trim().toLowerCase();
+    if (wid === 'homestead' || wid === 'market') {
+      throw new Error(`Cannot delete built-in world "${wid}".`);
+    }
+    this.worldRegistry = this.worldRegistry.filter((w) => w.id !== wid);
+    delete this.cachedWorlds[wid];
+    if (this.activeWorldId === wid) {
+      return this.switchWorld('homestead');
+    }
+    return null;
+  }
+
+  public switchWorld(target: FloatingWorldId): WorldInitMessage {
+    if (target === this.activeWorldId) {
+      return this.getInitMessage();
+    }
+    const targetMeta = this.worldRegistry.find((w) => w.id === target);
+    if (!targetMeta) {
+      throw new Error(`Unknown world "${target}".`);
+    }
+    if (target === 'market' && this.activeWorldId === 'homestead' && !this.getGateState().unlocked) {
+      throw new Error('Decipher and build the Sky Teleport Gate on Homestead Island first.');
+    }
+    const prevCoins = this.state.coins ?? 250;
+    const prevInv = { ...this.state.npc.inventory };
+    const prevNeeds = { ...this.state.npc.needs };
+
+    this.cacheCurrentWorld();
 
     this.activeWorldId = target;
+    this.activeWorldName = targetMeta.name;
+    this.activePreset = targetMeta.preset;
     const cached = this.cachedWorlds[target];
     if (cached) {
       this.blocks = new Uint8Array(cached.blocks);
@@ -616,15 +795,23 @@ export class OfflineDemoSimulator {
       this.entityCounter = cached.entityCounter;
       this.agentCounter = cached.agentCounter;
     } else {
-      this.state = this.createInitialState(this.state.seed + 100, target, prevCoins);
+      this.state = this.createInitialState(targetMeta.seed, target, prevCoins, targetMeta.name, targetMeta.preset);
       this.demoEntities = [];
       this.extraAgents = [];
       this.entityCounter = 0;
       this.agentCounter = 1;
-      this.generateMarketIsland(this.state.seed);
+      if (targetMeta.preset === 'market') {
+        this.generateMarketIsland(targetMeta.seed);
+      } else if (targetMeta.preset === 'homestead') {
+        this.generateIsland(targetMeta.seed);
+      } else {
+        this.generatePresetIsland(targetMeta.preset, targetMeta.seed);
+      }
     }
 
     this.state.world_id = target;
+    this.state.world_name = targetMeta.name;
+    this.state.world_preset = targetMeta.preset;
     this.state.coins = prevCoins;
     this.state.npc.inventory = prevInv;
     this.state.npc.needs = prevNeeds;
@@ -958,6 +1145,119 @@ export class OfflineDemoSimulator {
     ];
     this.waypointIdx = 0;
     this.updatePerception();
+  }
+
+  private generatePresetIsland(preset: string, seed: number): void {
+    this.blocks.fill(BlockId.AIR);
+    this.blockMeta.fill(0);
+    this.blockMaterials.fill('');
+    this.surfaceY.fill(-1);
+    this.rng = mulberry32(seed);
+    this.actionTimer = 0;
+    this.buildQueue = [];
+    this.farmQueue = [];
+
+    const specs: Record<
+      string,
+      { topBlock: number; topMat: string; rockMat: string; rimBoost: number; treeCap: number; ores: string[] }
+    > = {
+      alpine_peaks: { topBlock: BlockId.GRASS, topMat: 'meadow_grass', rockMat: 'slate', rimBoost: 3, treeCap: 20, ores: ['iron_vein', 'crystal_vein', 'gold_vein', 'marble'] },
+      sakura_grove: { topBlock: BlockId.GRASS, topMat: 'meadow_grass', rockMat: 'marble', rimBoost: 1, treeCap: 18, ores: ['marble', 'crystal_vein', 'gold_vein', 'iron_vein'] },
+      crystal_canyon: { topBlock: BlockId.COBBLESTONE, topMat: 'sandstone', rockMat: 'slate', rimBoost: 2, treeCap: 10, ores: ['crystal_vein', 'gold_vein', 'copper_vein', 'sunstone'] },
+      obsidian_caldera: { topBlock: BlockId.STONE, topMat: 'obsidian', rockMat: 'slate', rimBoost: 3, treeCap: 8, ores: ['obsidian', 'sunstone', 'copper_vein', 'gold_vein'] },
+      flat_sandbox: { topBlock: BlockId.GRASS, topMat: 'meadow_grass', rockMat: 'granite', rimBoost: 0, treeCap: 5, ores: ['iron_vein', 'coal_vein', 'marble', 'crystal_vein'] },
+    };
+    const cfg = specs[preset] ?? specs.alpine_peaks;
+
+    for (let x = 2; x <= 30; x++) {
+      for (let z = 2; z <= 30; z++) {
+        const r = Math.hypot((x - 16) / 14, (z - 16) / 13);
+        const ripple = Math.sin(x * 0.44 + seed * 0.13) * Math.cos(z * 0.38 - seed * 0.09);
+        if (r > 1.0 + 0.05 * ripple) continue;
+        const ridge = preset === 'flat_sandbox' ? 0 : Math.max(0, Math.floor((r + ripple * 0.14 - 0.55) * cfg.rimBoost * 2.2));
+        let top = 10 + Math.min(4, ridge);
+        if (x >= 10 && x <= 25 && z >= 10 && z <= 21) top = 10;
+        const bottom = Math.max(3, Math.min(top - 1, 3 + Math.floor(5.5 * r * r + ripple * 0.6)));
+        for (let y = bottom; y <= top; y++) {
+          if (y === top) {
+            if ((preset === 'crystal_canyon' || preset === 'obsidian_caldera') && x >= 12 && x <= 20 && z >= 12 && z <= 20) {
+              this.setBlock(x, y, z, BlockId.GRASS, 0, 'meadow_grass');
+            } else {
+              this.setBlock(x, y, z, cfg.topBlock, 0, cfg.topMat);
+            }
+          } else if (y >= top - 2) {
+            this.setBlock(x, y, z, BlockId.DIRT);
+          } else {
+            const mat = y <= 4 ? 'obsidian' : preset === 'obsidian_caldera' && y === 5 && (x + z) % 6 === 0 ? 'sunstone' : cfg.rockMat;
+            this.setBlock(x, y, z, BlockId.STONE, 0, mat);
+          }
+        }
+        this.surfaceY[z * WORLD_WIDTH + x] = top;
+      }
+    }
+
+    for (let x = 21; x <= 24; x++) {
+      for (let z = 14; z <= 17; z++) {
+        if (((x - 22.5) / 2.1) ** 2 + ((z - 15.5) / 2.2) ** 2 < 1) {
+          this.setBlock(x, 9, z, BlockId.DIRT, 0, preset === 'crystal_canyon' ? 'sandy_bank' : 'clay_bank');
+          this.setBlock(x, 10, z, BlockId.WATER);
+          this.surfaceY[z * WORLD_WIDTH + x] = 10;
+        }
+      }
+    }
+
+    if (preset === 'sakura_grove') {
+      for (let x = 12; x <= 20; x++) {
+        for (const z of [14, 18]) {
+          if (this.getBlock(x, 10, z) !== BlockId.WATER) this.setBlock(x, 10, z, BlockId.COBBLESTONE, 0, 'marble');
+        }
+      }
+      for (const [lx, lz] of [[11, 14], [11, 18], [20, 14], [20, 18]]) {
+        this.setBlock(lx, 11, lz, BlockId.TORCH, 0, 'copper_lantern');
+      }
+    } else if (preset === 'crystal_canyon' || preset === 'obsidian_caldera') {
+      const accent = preset === 'crystal_canyon' ? 'crystal_vein' : 'sunstone';
+      for (const [px, pz, h] of [[7, 8, 2], [24, 8, 2], [7, 23, 2], [25, 22, 1]]) {
+        const sy = this.surfaceY[pz * WORLD_WIDTH + px];
+        if (sy > 0) {
+          for (let dy = 1; dy <= h + 1; dy++) {
+            this.setBlock(px, sy + dy, pz, BlockId.STONE, 0, dy === h + 1 ? accent : cfg.rockMat);
+          }
+        }
+      }
+    }
+
+    let treesPlaced = 0;
+    const treePts: Array<{ x: number; z: number }> = [];
+    for (let z = 4; z < WORLD_DEPTH - 4; z++) {
+      for (let x = 4; x < WORLD_WIDTH - 4; x++) {
+        if (x >= 10 && x <= 25 && z >= 10 && z <= 21) continue;
+        const sy = this.surfaceY[z * WORLD_WIDTH + x];
+        if (sy <= 0 || this.getBlock(x, sy, z) === BlockId.WATER) continue;
+        if (treePts.some((tp) => Math.hypot(tp.x - x, tp.z - z) < 3.1)) continue;
+        const r = this.rng();
+        if (treesPlaced < cfg.treeCap && r < 0.16) {
+          this.setBlock(x, sy, z, BlockId.GRASS, 0, 'meadow_grass');
+          this.placeTree(x, sy + 1, z);
+          treePts.push({ x, z });
+          treesPlaced += 1;
+        } else if (r >= 0.16 && r < 0.19) {
+          this.setBlock(x, sy + 1, z, BlockId.STONE, 0, cfg.ores[treesPlaced % cfg.ores.length]);
+        } else if (r >= 0.19 && r < 0.21) {
+          this.setBlock(x, sy + 1, z, BlockId.WILD_BERRY);
+        }
+      }
+    }
+
+    this.state.npc.position = { x: 16, y: 11, z: 20 };
+    this.state.npc.grid_pos = { x: 16, y: 11, z: 20 };
+    this.state.stats.trees_count = treesPlaced;
+    this.waypoints = [
+      { x: 16, z: 18, action: 'exploring', goal: `Explore ${this.activeWorldName}`, thought: `Surveying ${this.activeWorldName} after God conjured it!` },
+      { x: 19, z: 15, action: 'drinking', goal: 'Inspect spring water', thought: 'Found freshwater along the clearing bank.' },
+      { x: 12, z: 14, action: 'thinking', goal: 'Plan camp layout', thought: 'Plenty of space here to build and craft.' },
+    ];
+    this.waypointIdx = 0;
   }
 
   private generateMarketIsland(seed: number): void {
@@ -1779,7 +2079,9 @@ export class OfflineDemoSimulator {
     return {
       format: 'land66-save-v1',
       save_version: 1,
-      biome: this.activeWorldId,
+      world_id: this.activeWorldId,
+      world_name: this.activeWorldName,
+      biome: this.activePreset,
       coins: state.coins ?? 250,
       gate_clues: { ...this.gateClues },
       name: (name ?? `Day ${state.day} (${state.clock_str})`).trim().slice(0, 64),
@@ -1884,19 +2186,28 @@ export class OfflineDemoSimulator {
     const speed: SimSpeed = rawSpeed === 2 || rawSpeed === 5 ? rawSpeed : 1;
 
     const rawBiome = String((payload as Record<string, unknown>).biome ?? 'homestead');
-    const biome: FloatingWorldId = rawBiome === 'market' ? 'market' : 'homestead';
+    const rawWorldId = String((payload as Record<string, unknown>).world_id ?? rawBiome).trim().toLowerCase() || 'homestead';
+    const rawWorldName = String(
+      (payload as Record<string, unknown>).world_name ??
+        (rawWorldId === 'homestead' ? 'Homestead' : rawWorldId === 'market' ? 'Market' : DEMO_PRESET_LABELS[rawBiome] ?? rawWorldId),
+    ).slice(0, 40);
     const coins = Math.max(0, Number((payload as Record<string, unknown>).coins ?? 250));
     const rawClues = (payload as Record<string, unknown>).gate_clues as Record<string, unknown> | undefined;
     this.gateClues =
-      biome === 'market'
+      rawWorldId !== 'homestead'
         ? { anchor: true, conduit: true, core: true }
         : {
             anchor: Boolean(rawClues?.anchor),
             conduit: Boolean(rawClues?.conduit),
             core: Boolean(rawClues?.core),
           };
-    this.activeWorldId = biome;
-    this.state = this.createInitialState(seed, biome, coins);
+    if (!this.worldRegistry.some((w) => w.id === rawWorldId)) {
+      this.worldRegistry.push({ id: rawWorldId, name: rawWorldName, preset: rawBiome, seed, builtin: false });
+    }
+    this.activeWorldId = rawWorldId;
+    this.activeWorldName = rawWorldName;
+    this.activePreset = rawBiome;
+    this.state = this.createInitialState(seed, rawWorldId, coins, rawWorldName, rawBiome);
     this.state.tick = Math.max(0, Number(payload.tick ?? 0));
     this.state.day = day;
     this.state.time_of_day = timeOfDay;

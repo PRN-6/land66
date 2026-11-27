@@ -95,9 +95,20 @@ class Intervention(BaseModel):
         "remove_block",
         "spawn_entity",
         "clear_entities",
+        "create_world",
     ]
     value: Any = None
     agent_id: str | None = None
+
+
+class CreateWorldRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, max_length=40)
+    preset: str = Field(default="homestead", max_length=32)
+    seed: int | None = Field(default=None, ge=-(2**63), le=2**63 - 1)
+    starter_name: str | None = Field(default=None, max_length=32)
+    starter_role: Literal["pioneer", "builder", "farmer", "forager", "explorer"] = "pioneer"
+    switch: bool = True
 
 
 class CreateAgentRequest(BaseModel):

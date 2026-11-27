@@ -10,8 +10,10 @@ import type {
   SaveSlotSummary,
   SimSpeed,
   TeleportGateState,
+  WorldPresetId,
   WorldSavePayload,
   WorldStateSnapshot,
+  WorldSummary,
 } from '../types/world';
 
 const DEFAULT_API_URL = 'http://localhost:8000';
@@ -225,6 +227,34 @@ export const backendApi = {
     return requestJson('/api/world/switch', {
       method: 'POST',
       body: JSON.stringify({ world }),
+    });
+  },
+
+  listWorlds(): Promise<{
+    active_world: string;
+    worlds: WorldSummary[];
+    presets: Array<{ id: string; label: string; description: string }>;
+  }> {
+    return requestJson('/api/worlds');
+  },
+
+  createWorld(payload: {
+    name?: string;
+    preset: WorldPresetId | string;
+    seed?: number;
+    starter_name?: string;
+    starter_role?: AgentRole;
+    switch?: boolean;
+  }): Promise<{ ok: boolean; world: WorldSummary; state: WorldStateSnapshot; worlds: WorldSummary[] }> {
+    return requestJson('/api/world/create', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  deleteWorld(worldId: string): Promise<{ ok: boolean; deleted: string; state: WorldStateSnapshot; worlds: WorldSummary[] }> {
+    return requestJson(`/api/world/${encodeURIComponent(worldId)}`, {
+      method: 'DELETE',
     });
   },
 

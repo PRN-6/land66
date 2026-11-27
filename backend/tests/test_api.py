@@ -312,3 +312,61 @@ def test_api_instruct_npc_kill_and_defense():
         stop = client.post('/api/npc/action', json={'action': 'idle', 'agent_id': 'aiden'})
         assert stop.status_code == 200
         assert stop.json()['state']['npc']['hostile_target'] is None
+
+
+def test_god_directly_create_switch_and_delete_world():
+    with TestClient(client_app()) as client:
+        client.post('/api/sim/control', json={'action': 'pause'})
+        with client.websocket_connect('/ws') as ws:
+            init_msg = ws.receive_json()
+            assert init_msg['type'] == 'world_init'
+            assert len(init_msg['state']['worlds']) == 2
+
+            # Built-in Market stays locked until Teleport Gate unlocked, whereas God can create any realm directly
+            assert client.post('/api/world/switch', json={'world': 'market'}).status_code == 403
+
+            created = client.post('/api/world/create', json={
+                'name': 'Emerald Peaks',
+                'preset': 'alpine_peaks',
+                'seed': 777,
+                'starter_name': 'Nova',
+                'starter_role': 'explorer',
+                'switch': True,
+            })
+            assert created.status_code == 200
+            body = created.json()
+            assert body['world']['id'] == 'emerald-peaks'
+            assert body['world']['name'] == 'Emerald Peaks'
+            assert body['world']['preset'] == 'alpine_peaks'
+            assert body['state']['world_id'] == 'emerald-peaks'
+            assert body['state']['world_name'] == 'Emerald Peaks'
+            assert body['state']['npc']['name'] == 'Nova'
+            assert body['state']['npc']['role'] == 'explorer'
+            assert next_type(ws, 'world_init')['state']['world_id'] == 'emerald-peaks'
+
+            # God can also create another world directly via /api/god/intervene
+            sakura = client.post('/api/god/intervene', json={
+                'action': 'create_world',
+                'value': {'name': 'Blossom Isle', 'preset': 'sakura_grove', 'seed': 888},
+            })
+            assert sakura.status_code == 200
+            assert sakura.json()['world_id'] == 'blossom-isle'
+            assert next_type(ws, 'world_init')['state']['world_id'] == 'blossom-isle'
+
+            listed = client.get('/api/worlds').json()
+            ids = [w['id'] for w in listed['worlds']]
+            assert {'homestead', 'market', 'emerald-peaks', 'blossom-isle'} <= set(ids)
+            assert len(listed['presets']) >= 7
+
+            # Built-in worlds cannot be deleted
+            assert client.delete('/api/world/homestead').status_code == 422
+            assert client.delete('/api/world/market').status_code == 422
+
+            # Deleting active custom world cleanly switches back to Homestead
+            deleted = client.delete('/api/world/blossom-isle')
+            assert deleted.status_code == 200
+            assert deleted.json()['state']['world_id'] == 'homestead'
+            assert next_type(ws, 'world_init')['state']['world_id'] == 'homestead'
+
+            # Invalid preset rejected cleanly
+            assert client.post('/api/world/create', json={'preset': 'underwater_void'}).status_code == 422

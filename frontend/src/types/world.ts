@@ -221,7 +221,27 @@ export interface LlmStatus {
   last_error: string | null;
 }
 
-export type FloatingWorldId = 'homestead' | 'market';
+export type FloatingWorldId = string;
+
+export type WorldPresetId =
+  | 'homestead'
+  | 'alpine_peaks'
+  | 'sakura_grove'
+  | 'crystal_canyon'
+  | 'obsidian_caldera'
+  | 'flat_sandbox'
+  | 'market';
+
+export interface WorldSummary {
+  id: string;
+  name: string;
+  preset: WorldPresetId | string;
+  preset_label?: string;
+  seed: number;
+  locked?: boolean;
+  builtin?: boolean;
+  agents_count?: number;
+}
 
 export interface TeleportGateState {
   discovered: boolean;
@@ -250,7 +270,10 @@ export interface WorldStateSnapshot {
   paused: boolean;
   speed: SimSpeed | number;
   seed: number;
-  world_id?: FloatingWorldId | string;
+  world_id?: FloatingWorldId;
+  world_name?: string;
+  world_preset?: string;
+  worlds?: WorldSummary[];
   coins?: number;
   gate?: TeleportGateState;
   npc: NpcState;
@@ -421,6 +444,9 @@ export interface SaveSlotSummary {
 export interface WorldSavePayload {
   format: string;
   save_version?: number;
+  world_id?: string;
+  world_name?: string;
+  biome?: string;
   name?: string;
   saved_at?: string;
   seed: number;

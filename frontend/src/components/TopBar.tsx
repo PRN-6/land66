@@ -10,6 +10,7 @@ import {
   PanelRight,
   Pause,
   Play,
+  Plus,
   RotateCcw,
   Route,
   Save,
@@ -30,6 +31,7 @@ interface TopBarProps {
   inspectorOpen: boolean;
   onControl: (action: 'pause' | 'resume' | 'step' | 'set_speed' | 'reset', speed?: SimSpeed, seed?: number) => void;
   onSwitchWorld: (world: FloatingWorldId) => void;
+  onOpenCreateWorldModal: () => void;
   onCameraMode: (mode: CameraMode) => void;
   onToggleThoughtBubble: () => void;
   onTogglePath: () => void;
@@ -50,6 +52,7 @@ export function TopBar({
   inspectorOpen,
   onControl,
   onSwitchWorld,
+  onOpenCreateWorldModal,
   onCameraMode,
   onToggleThoughtBubble,
   onTogglePath,
@@ -112,29 +115,46 @@ export function TopBar({
       {/* Floating World Switcher */}
       <div className="flex items-center gap-0.5 pr-1.5 border-r border-white/10">
         {(
-          [
-            { id: 'homestead', label: 'Homestead' },
-            { id: 'market', label: 'Market' },
-          ] as const
+          state.worlds && state.worlds.length > 0
+            ? state.worlds
+            : [
+                { id: 'homestead', name: 'Homestead', preset: 'homestead', seed: state.seed, locked: false },
+                {
+                  id: 'market',
+                  name: 'Market',
+                  preset: 'market',
+                  seed: state.seed + 100,
+                  locked: !(state.gate?.unlocked ?? false),
+                },
+              ]
         ).map((w) => {
           const active = (state.world_id ?? 'homestead') === w.id;
-          const locked = w.id === 'market' && !(state.gate?.unlocked ?? false);
+          const locked = Boolean(w.locked ?? (w.id === 'market' && !(state.gate?.unlocked ?? false)));
           return (
             <button
               key={w.id}
               onClick={() => (locked ? onOpenGateModal() : onSwitchWorld(w.id))}
-              title={locked ? 'Build Sky Teleport Gate to unlock Market' : undefined}
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] transition cursor-pointer ${
+              title={locked ? 'Build Sky Teleport Gate to unlock Market' : `${w.name} (${w.preset})`}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] transition cursor-pointer max-w-[7.5rem] truncate ${
                 active
                   ? 'bg-white text-neutral-950 font-medium'
                   : 'text-neutral-400 hover:text-white hover:bg-white/10'
               }`}
             >
-              {locked && <Lock className="w-2.5 h-2.5" />}
-              <span>{w.label}</span>
+              {locked && <Lock className="w-2.5 h-2.5 shrink-0" />}
+              <span className="truncate">{w.name}</span>
             </button>
           );
         })}
+
+        <button
+          onClick={onOpenCreateWorldModal}
+          title="Create New Floating World"
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] text-neutral-200 bg-white/10 hover:bg-white hover:text-neutral-950 transition cursor-pointer"
+        >
+          <Plus className="w-3 h-3" />
+          <span className="hidden lg:inline">New World</span>
+        </button>
 
         <button
           onClick={onOpenGateModal}
