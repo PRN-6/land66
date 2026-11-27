@@ -62,14 +62,20 @@ DURATIONS = {"idle": 2, "explore": .3, "walk": .1, "forage": 2, "drink": 2.5,
              "harvest": 2, "plant_sapling": 1.5, "journal": 4,
              "gather": 3, "furnish": 3, "repair": 4, "clean": 5, "wash": 4,
              "refill": 4, "stoke": 2, "store": 2, "take": 2, "fertilize": 2,
-             "study_gate": 3, "build_gate": 1.2, "hunt": 2.2}
+             "study_gate": 3, "build_gate": 1.2, "hunt": 2.2, "attack": 1.2}
 ANIMATION = {"chop": "chopping", "mine": "mining", "build": "building", "till": "tilling",
              "plant": "planting", "plant_sapling": "planting", "water": "watering",
              "harvest": "harvesting", "forage": "harvesting", "eat": "eating",
              "drink": "drinking", "sleep": "sleeping", "craft": "building", "journal": "thinking",
              "gather": "harvesting", "furnish": "building", "repair": "building", "clean": "tilling",
              "wash": "watering", "refill": "watering", "stoke": "building", "store": "building", "take": "building", "fertilize": "tilling",
-             "study_gate": "thinking", "build_gate": "building", "hunt": "hunting"}
+             "study_gate": "thinking", "build_gate": "building", "hunt": "hunting", "attack": "hunting"}
+
+WEAPON_DAMAGE: dict[str, float] = {
+    "iron_sword": 36.0,
+    "hunting_bow": 26.0,
+    "wooden_spear": 22.0,
+}
 
 HUNTABLE_KINDS = {"deer", "fox", "sheep", "duck"}
 HUNT_LOOT: dict[str, dict[str, int]] = {
@@ -210,6 +216,9 @@ class NpcAgent:
         self.last_journal_day = 0
         self.last_plant_time = -999.0
         self.queued_decision: Decision | None = None
+        self.hostile_target: str | None = None
+        self.threatened_by: str | None = None
+        self.under_attack_until: float = 0.0
         self.llm_status = dict(
             provider="fallback", model="", thinking=False, last_latency_ms=0,
             calls_count=0, fallback_active=True, last_error=None,
@@ -260,6 +269,8 @@ class NpcAgent:
                 continue
             nearby.append(dict(
                 type="person",
+                agent_id=peer.id,
+                health=round(peer.needs["health"], 1),
                 label=f"{peer.name} ({peer.role})",
                 position=xyz(peer.grid_pos),
                 distance=round(distance(self.position, peer.position), 2),
@@ -299,6 +310,8 @@ class NpcAgent:
             llm_status=dict(self.llm_status),
             tools={k:dict(durability=v,owned=self.inventory[k]) for k,v in self.household.tools.items()},
             weapons={k: dict(durability=v, owned=self.inventory[k]) for k, v in self.household.weapons.items()},
+            hostile_target=self.hostile_target,
+            threatened_by=self.threatened_by if self.sim.elapsed < self.under_attack_until else None,
         )
 
     def export_save(self) -> dict:
@@ -447,6 +460,38 @@ class NpcAgent:
                 if path is not None:
                     return self.make_job("hunt", pos, path, entity_id=ent["id"], kind=ent["kind"], weapon=weapon)
             return False
+        if action == "attack":
+            req_id = str(params.get("target_id", "")).strip()
+            req_name = str(params.get("target_name", "")).strip().lower()
+            target_agent = None
+            if req_id and req_id in self.sim.agents and req_id != self.id:
+                target_agent = self.sim.agents[req_id]
+            elif req_name:
+                target_agent = next(
+                    (a for a in self.sim.agents.values() if a.id != self.id and req_name in a.name.lower()),
+                    None,
+                )
+            elif len(self.sim.agents) > 1:
+                others = [a for a in self.sim.agents.values() if a.id != self.id]
+                others.sort(key=lambda a: distance(self.position, a.position))
+                target_agent = others[0] if others else None
+            if not target_agent:
+                return False
+            weapon = self.household.active_weapon()
+            reach_atk = 3 if weapon == "hunting_bow" else 1
+            path = self.approach(target_agent.grid_pos, reach=reach_atk, avoid_target=False)
+            if path is None:
+                return False
+            # Alert target immediately so they can defend themselves!
+            target_agent.threatened_by = self.id
+            target_agent.under_attack_until = self.sim.elapsed + 25.0
+            if target_agent.current_action != "attack" or not target_agent.job or target_agent.job["params"].get("target_id") != self.id:
+                target_agent.thought = f"{self.name} is coming for me! I will defend myself!"
+                target_agent.remember(f"{self.name} threatened me; preparing to fight back.")
+                if target_agent.current_action in {"idle", "walk", "explore", "chop", "mine", "build", "till", "plant", "water", "harvest", "forage", "journal"} or not target_agent.job:
+                    target_agent.job = None
+                    target_agent.defend_against(self.id)
+            return self.make_job("attack", target_agent.grid_pos, path, target_id=target_agent.id, weapon=weapon)
         if action in {"idle", "journal"}:
             return self.make_job(action)
         if action == "sleep":
@@ -526,6 +571,19 @@ class NpcAgent:
             return False
         return self.make_job(action, *result, on_bed=action == "sleep")
 
+    def defend_against(self, attacker_id: str) -> bool:
+        attacker = self.sim.agents.get(attacker_id)
+        if not attacker or attacker.id == self.id:
+            return False
+        self.threatened_by = attacker_id
+        self.under_attack_until = self.sim.elapsed + 25.0
+        weapon = self.household.active_weapon()
+        reach_def = 3 if weapon == "hunting_bow" else 1
+        path = self.approach(attacker.grid_pos, reach=reach_def, avoid_target=False)
+        if path is None:
+            return False
+        return self.make_job("attack", attacker.grid_pos, path, target_id=attacker.id, weapon=weapon, defensive=True)
+
     def can_start(self, action: str, params: dict) -> bool:
         saved = (self.job,self.current_action,self.target,self.path,self.progress,self.animation)
         rng_state = self.sim.rng.getstate()
@@ -574,6 +632,23 @@ class NpcAgent:
             if self.apply_decision(decision):
                 return
             self.remember("I reconsidered an idea that was no longer possible.")
+        # Self-defense priority when under attack
+        if self.threatened_by and self.sim.elapsed < self.under_attack_until:
+            attacker = sim.agents.get(self.threatened_by)
+            if attacker:
+                if self.defend_against(attacker.id):
+                    self.current_goal = f"Defend myself against {attacker.name}"
+                    return
+            else:
+                self.threatened_by = None
+        # Continue instructed combat target until defeated or calmed
+        if self.hostile_target:
+            target = sim.agents.get(self.hostile_target)
+            if target and self.start_action("attack", {"target_id": target.id}):
+                self.current_goal = f"Attack {target.name}"
+                return
+            if not target:
+                self.hostile_target = None
         if sim.biome == "market":
             spots = [(16, 11, 19), (9, 11, 11), (22, 11, 11), (22, 11, 18), (13, 11, 16)]
             target_spot = spots[(sim.tick // 80 + self.variant) % len(spots)]
@@ -701,6 +776,70 @@ class NpcAgent:
                 loot_str = ", ".join(f"+{v} {k.replace('_', ' ')}" for k, v in drops.items())
                 self.remember(f"Hunted a {ent['kind']} using {(weapon or 'weapon').replace('_', ' ')} ({loot_str}).")
                 self.thought = f"Successful hunt! Gathered {loot_str}."
+        elif action == "attack":
+            tid = params.get("target_id")
+            defender = sim.agents.get(tid) if tid else None
+            if not defender or defender.id == self.id:
+                self.hostile_target = None
+                self.threatened_by = None
+            else:
+                weapon = self.household.active_weapon() or params.get("weapon")
+                max_range = 4.5 if weapon == "hunting_bow" else 3.2
+                if distance(self.position, defender.position) <= max_range:
+                    if weapon in WEAPON_DAMAGE:
+                        base_dmg = WEAPON_DAMAGE[weapon]
+                    elif inv.get("axe", 0) > 0:
+                        base_dmg = 16.0
+                    elif inv.get("pickaxe", 0) > 0:
+                        base_dmg = 14.0
+                    else:
+                        base_dmg = 12.0
+                    # Defender actively countering mitigates 20% incoming hit damage
+                    defending_stance = defender.threatened_by == self.id and defender.current_action == "attack"
+                    dmg = round(base_dmg * (0.8 if defending_stance else 1.0), 1)
+                    defender.needs["health"] = max(0.0, defender.needs["health"] - dmg)
+                    defender.needs["mood"] = max(0.0, defender.needs["mood"] - 4.0)
+                    defender.threatened_by = self.id
+                    defender.under_attack_until = sim.elapsed + 25.0
+                    if weapon in WEAPON_DAMAGE:
+                        self.household.wear_weapon(weapon)
+                    w_label = (weapon or "fists").replace("_", " ")
+                    self.remember(f"Struck {defender.name} with {w_label} ({int(dmg)} dmg).")
+                    defender.remember(f"{self.name} hit me for {int(dmg)} dmg! Defending myself.")
+                    defender.thought = f"Taking hits from {self.name}! Fighting back!"
+                    if defender.current_action != "attack":
+                        defender.job = None
+                        defender.defend_against(self.id)
+
+                    if defender.needs["health"] <= 0:
+                        for item_k, amt in list(defender.inventory.items()):
+                            if amt > 0:
+                                inv[item_k] = inv.get(item_k, 0) + amt
+                                defender.inventory[item_k] = 0
+                        self.hostile_target = None
+                        self.threatened_by = None
+                        defender.hostile_target = None
+                        defender.threatened_by = None
+                        if defender.id != "aiden":
+                            sim.agents.pop(defender.id, None)
+                            for peer in sim.agents.values():
+                                if peer.hostile_target == defender.id:
+                                    peer.hostile_target = None
+                                if peer.threatened_by == defender.id:
+                                    peer.threatened_by = None
+                            self.remember(f"Defeated {defender.name} and claimed their gear.")
+                            self.thought = f"{defender.name} is defeated."
+                        else:
+                            defender.needs["health"] = 25.0
+                            defender.position = [16.0, 11.0, 20.0]
+                            defender.grid_pos = (16, 11, 20)
+                            defender.job, defender.target, defender.path = None, None, []
+                            defender.animation, defender.current_action = "idle", "idle"
+                            defender.thought = f"I was defeated by {self.name} and barely recovered!"
+                            self.remember(f"Knocked out {defender.name} and took their supplies.")
+                            self.thought = f"Overpowered {defender.name}!"
+                else:
+                    self.thought = f"Chasing {defender.name}!"
         elif action == "chop" and p and w.get(*p) == LOG:
             x, y, z = p
             logs = 0
@@ -1242,7 +1381,8 @@ class Simulation:
         self.primary.household.update(dt)
         self.update_entities(dt)
         for agent in list(self.agents.values()):
-            agent.step_agent(dt)
+            if agent.id in self.agents:
+                agent.step_agent(dt)
 
     def intervene(self, action: str, value: Any, agent_id: str | None = None):
         if action == "set_time":
@@ -1259,9 +1399,29 @@ class Simulation:
             if not isinstance(value, str) or not value.strip() or len(value) > 1000:
                 raise ValueError("whisper value must be 1..1000 characters")
             targets = list(self.agents.values()) if agent_id == "all" else [self._resolve_agent(agent_id)]
+            low = value.lower()
+            stop_fight = any(w in low for w in ("stop fighting", "cease", "peace", "stand down", "calm down"))
+            attack_intent = any(w in low for w in ("kill", "attack", "fight", "slay", "defeat", "eliminate"))
+            named_prey = next(
+                (a for a in self.agents.values() if a.name.lower() in low or a.id.lower() in low),
+                None,
+            )
             for ag in targets:
                 ag.remember(f"A whisper from the sky: {value}")
-                ag.thought = f"I heard a whisper: {value[:200]}. I will think about it while caring for myself."
+                if stop_fight:
+                    ag.hostile_target = None
+                    ag.threatened_by = None
+                    if ag.current_action == "attack":
+                        ag.job, ag.target, ag.path = None, None, []
+                        ag.animation, ag.current_action = "idle", "idle"
+                    ag.thought = "Standing down as instructed."
+                elif attack_intent and named_prey and named_prey.id != ag.id:
+                    ag.hostile_target = named_prey.id
+                    ag.thought = f"Understood. Moving to attack {named_prey.name}!"
+                    ag.job = None
+                    ag.start_action("attack", {"target_id": named_prey.id})
+                else:
+                    ag.thought = f"I heard a whisper: {value[:200]}. I will think about it while caring for myself."
         elif action == "heal_npc":
             targets = list(self.agents.values()) if agent_id == "all" else [self._resolve_agent(agent_id)]
             for ag in targets:

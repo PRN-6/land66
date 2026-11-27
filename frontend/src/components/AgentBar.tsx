@@ -69,6 +69,7 @@ export function AgentBar({
                 </div>
                 <div className={`text-[10px] font-mono truncate ${selected ? 'text-neutral-600' : 'text-neutral-400'}`}>
                   {ag.current_action}
+                  {ag.needs.health < 99 ? ` · HP ${Math.round(ag.needs.health)}%` : ''}
                 </div>
               </div>
             </button>

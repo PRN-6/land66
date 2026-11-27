@@ -89,6 +89,8 @@ def test_multi_agent_brains_and_management():
         # Independent per-NPC brain configuration
         assert client.get('/api/llm/config').json()['provider'] == 'fallback'
         assert client.get(f"/api/llm/config?agent_id={elena['id']}").json()['model'] == 'qwen-farm'
+        # Pause before testing whisper state so background ticks do not overwrite thought mid-request
+        assert client.post('/api/sim/control', json={'action': 'pause'}).status_code == 200
         # Targeted whisper & heal
         assert client.post('/api/god/intervene',json={'action':'whisper','value':'Tend the wheat','agent_id':elena['id']}).status_code == 200
         state = client.get('/api/state').json()
@@ -288,3 +290,25 @@ def test_npc_craft_weapon_hunt_and_sell_loot():
         st = client.get('/api/state').json()
         assert st['npc']['current_action'] == 'hunt'
         assert st['npc']['weapons']['wooden_spear']['owned'] == 1
+
+
+def test_api_instruct_npc_kill_and_defense():
+    with TestClient(client_app()) as client:
+        client.post('/api/sim/control', json={'action': 'pause'})
+        elena = client.post('/api/agents', json={'name': 'Elena', 'role': 'builder'}).json()
+        res = client.post('/api/god/intervene', json={
+            'action': 'whisper',
+            'value': 'kill Elena',
+            'agent_id': 'aiden',
+        })
+        assert res.status_code == 200
+        st = res.json()
+        assert st['npc']['hostile_target'] == elena['id']
+        elena_state = next(a for a in st['agents'] if a['id'] == elena['id'])
+        assert elena_state['threatened_by'] == 'aiden'
+        assert elena_state['current_action'] == 'attack'
+
+        # Can also stand down via /api/npc/action idle
+        stop = client.post('/api/npc/action', json={'action': 'idle', 'agent_id': 'aiden'})
+        assert stop.status_code == 200
+        assert stop.json()['state']['npc']['hostile_target'] is None

@@ -62,7 +62,7 @@ class ConfigPatch(BaseModel):
 Action = Literal[
     "idle", "explore", "walk", "forage", "drink", "eat", "sleep", "chop", "mine",
     "craft", "build", "till", "plant", "water", "harvest", "plant_sapling",
-    "journal", "gather", "study_gate", "build_gate", "hunt"
+    "journal", "gather", "study_gate", "build_gate", "hunt", "attack"
 ]
 
 

@@ -328,3 +328,39 @@ def test_weapon_crafting_hunting_and_cooking():
 
     # Verify AI JSON schema accepts hunt action
     assert Decision(thought='Hunt game', goal='Eat', action='hunt').action == 'hunt'
+
+
+def test_npc_attack_instruction_and_self_defense():
+    s = Simulation(seed=66)
+    elena = s.add_agent(name='Elena', role='builder')
+    # Place Elena right next to Aiden so combat starts reliably
+    elena.grid_pos = (16, 11, 19)
+    elena.position = [16.0, 11.0, 19.0]
+    s.primary.inventory['wooden_spear'] = 1
+    elena.inventory['iron_sword'] = 1
+
+    # Instruct Aiden to kill Elena via whisper -> Elena immediately enters self-defense!
+    s.intervene('whisper', 'kill Elena', agent_id='aiden')
+    assert s.primary.hostile_target == elena.id
+    assert elena.threatened_by == 'aiden'
+    assert elena.current_action == 'attack'
+
+    # Run duel: Elena (with Iron Sword + defender stance) should prevail cleanly without crashing
+    for _ in range(180):
+        s.step(0.1)
+    assert s.primary.needs['health'] > 0  # Aiden recovers safely without KeyError
+    assert elena.needs['health'] < 100.0  # Aiden struck Elena before falling
+
+    # Now instruct Aiden (armed with iron sword) to defeat an unarmed rival Marcus -> Marcus removed
+    marcus = s.add_agent(name='Marcus', role='farmer')
+    marcus.grid_pos = (16, 11, 19)
+    marcus.position = [16.0, 11.0, 19.0]
+    s.primary.needs['health'] = 100.0
+    s.primary.inventory['iron_sword'] = 1
+    s.intervene('whisper', 'attack Marcus', agent_id='aiden')
+    for _ in range(180):
+        s.step(0.1)
+        if marcus.id not in s.agents:
+            break
+    assert marcus.id not in s.agents
+    assert Decision(thought='Defend self', goal='Fight', action='attack', params={'target_name': 'Elena'}).action == 'attack'

@@ -9,6 +9,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anyio
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,6 +74,10 @@ class Runtime:
         return self.brains[aid]
 
     def sync_status(self):
+        for aid in list(self.brains.keys()):
+            if aid not in self.sim.agents:
+                self.brains.pop(aid, None)
+                self.next_think_ticks.pop(aid, None)
         for aid, agent in self.sim.agents.items():
             b = self.brains.get(aid)
             if not b:
@@ -577,6 +582,19 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         ag = rt.sim._resolve_agent(agent_id)
         if not action:
             raise HTTPException(422, "action is required")
+        if action == "attack":
+            target_id = str(params.get("target_id", "")).strip()
+            target_name = str(params.get("target_name", "")).strip().lower()
+            tgt = (
+                rt.sim.agents.get(target_id)
+                if target_id in rt.sim.agents
+                else next((a for a in rt.sim.agents.values() if a.id != ag.id and target_name and target_name in a.name.lower()), None)
+            )
+            if tgt and tgt.id != ag.id:
+                ag.hostile_target = tgt.id
+        elif action == "idle":
+            ag.hostile_target = None
+            ag.threatened_by = None
         ok = ag.start_action(action, params)
         if not ok:
             raise HTTPException(422, f"{ag.name} cannot start '{action}' right now (missing materials, weapon, or reachable target).")
@@ -640,30 +658,35 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         queue.put_nowait(rt.sim.world_init())
         rt.clients.add(queue)
 
-        async def send():
-            while True:
-                message = await queue.get()
-                if message is None:
-                    await ws.close(code=1013, reason="Client fell behind; reconnect for a full world snapshot")
-                    return
-                await asyncio.wait_for(ws.send_json(message), timeout=5)
+        async def send(tg: anyio.abc.TaskGroup):
+            try:
+                while True:
+                    message = await queue.get()
+                    if message is None:
+                        await ws.close(code=1013, reason="Client fell behind; reconnect for a full world snapshot")
+                        return
+                    with anyio.fail_after(5):
+                        await ws.send_json(message)
+            except (WebSocketDisconnect, RuntimeError, TimeoutError):
+                pass
+            finally:
+                tg.cancel_scope.cancel()
 
-        async def receive():
-            while True:
-                await ws.receive_text()
+        async def receive(tg: anyio.abc.TaskGroup):
+            try:
+                while True:
+                    await ws.receive_text()
+            except (WebSocketDisconnect, RuntimeError):
+                pass
+            finally:
+                tg.cancel_scope.cancel()
 
-        sender, receiver = asyncio.create_task(send()), asyncio.create_task(receive())
         try:
-            done, _ = await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                task.result()
-        except (WebSocketDisconnect, RuntimeError, TimeoutError):
-            pass
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(send, tg)
+                tg.start_soon(receive, tg)
         finally:
             rt.clients.discard(queue)
-            for task in (sender, receiver):
-                task.cancel()
-            await asyncio.gather(sender, receiver, return_exceptions=True)
 
     return app
 

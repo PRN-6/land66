@@ -51,6 +51,7 @@ export function InspectorDrawer({
 }: InspectorDrawerProps) {
   const [tab, setTab] = useState<'mind' | 'vitals' | 'world'>('mind');
   const [logMode, setLogMode] = useState<'memories' | 'journal'>('memories');
+  const [combatTargetId, setCombatTargetId] = useState('');
 
   if (!open) return null;
 
@@ -63,6 +64,11 @@ export function InspectorDrawer({
   const logs = logMode === 'memories' ? npc.memories : npc.journal;
   const creatures = state.entities ?? [];
   const { stats } = state;
+  const otherNpcs = agents.filter((a, i) => (a.id ?? (i === 0 ? 'aiden' : `npc-${i + 1}`)) !== activeId);
+  const resolvedTargetId =
+    otherNpcs.find((a, i) => (a.id ?? (i === 0 ? 'aiden' : `npc-${i + 1}`)) === combatTargetId)?.id ??
+    otherNpcs[0]?.id ??
+    '';
 
   return (
     <aside className="pointer-events-auto fixed top-16 right-3 bottom-16 z-20 w-72 max-w-[calc(100vw-1.5rem)] flex flex-col rounded-2xl bg-neutral-950/75 backdrop-blur-xl border border-white/10 shadow-2xl overflow-hidden">
@@ -306,6 +312,52 @@ export function InspectorDrawer({
                       Cook Meat
                     </button>
                   )}
+                </div>
+              )}
+
+              {onNpcAction && otherNpcs.length > 0 && (
+                <div className="pt-2 border-t border-white/10 space-y-1.5">
+                  <div className="text-[10px] text-neutral-400 flex justify-between">
+                    <span>Instruct Combat / Self-Defense</span>
+                    {(npc.threatened_by || npc.hostile_target) && (
+                      <span className="font-mono text-neutral-200">
+                        {npc.threatened_by ? 'Defending' : 'Attacking'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-1">
+                    <select
+                      value={resolvedTargetId}
+                      onChange={(e) => setCombatTargetId(e.target.value)}
+                      className="flex-1 min-w-0 px-2 py-1 rounded-lg bg-neutral-950 border border-white/10 text-[10px] text-neutral-200"
+                    >
+                      {otherNpcs.map((peer, idx) => {
+                        const pid = peer.id ?? `npc-${idx + 1}`;
+                        return (
+                          <option key={pid} value={pid}>
+                            {peer.name} ({Math.round(peer.needs.health)}% HP)
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!resolvedTargetId}
+                      onClick={() => onNpcAction('attack', { target_id: resolvedTargetId }, activeId)}
+                      className="px-2.5 py-1 rounded-lg bg-white text-neutral-950 font-medium hover:bg-neutral-200 disabled:opacity-40 text-[10px] cursor-pointer shrink-0"
+                    >
+                      Attack
+                    </button>
+                    {(npc.hostile_target || npc.threatened_by || npc.current_action === 'attack') && (
+                      <button
+                        type="button"
+                        onClick={() => onNpcAction('idle', {}, activeId)}
+                        className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[10px] text-neutral-200 cursor-pointer shrink-0"
+                      >
+                        Stop
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

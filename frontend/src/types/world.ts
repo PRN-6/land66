@@ -171,6 +171,8 @@ export interface NpcState {
   llm_status?: LlmStatus;
   tools?: Record<string, { durability: number; owned: number }>;
   weapons?: Record<string, { durability: number; owned: number }>;
+  hostile_target?: string | null;
+  threatened_by?: string | null;
 }
 
 export interface HouseBounds {

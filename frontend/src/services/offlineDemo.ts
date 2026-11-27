@@ -499,6 +499,38 @@ export class OfflineDemoSimulator {
       }
       throw new Error(`Unsupported recipe "${recipe}".`);
     }
+    if (action === 'idle') {
+      npc.hostile_target = null;
+      npc.threatened_by = null;
+      npc.current_action = 'idle';
+      npc.animation = 'idle';
+      npc.thought = 'Standing down cleanly.';
+      return npc.thought;
+    }
+    if (action === 'attack') {
+      const allNpcs: NpcState[] = [this.state.npc, ...this.extraAgents];
+      const attackerId = npc.id ?? 'aiden';
+      const targetId = String(params.target_id ?? '').trim();
+      const targetName = String(params.target_name ?? '').trim().toLowerCase();
+      const target = allNpcs.find(
+        (peer, idx) =>
+          (peer.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`)) !== attackerId &&
+          ((targetId && (peer.id ?? 'aiden') === targetId) ||
+            (targetName && peer.name.toLowerCase().includes(targetName)) ||
+            (!targetId && !targetName)),
+      );
+      if (!target) {
+        throw new Error('No other NPC available to target.');
+      }
+      const tid = target.id ?? 'aiden';
+      npc.hostile_target = tid;
+      npc.current_action = 'attack';
+      npc.animation = 'hunting';
+      npc.thought = `Attacking ${target.name}!`;
+      target.threatened_by = attackerId;
+      target.thought = `${npc.name} attacked me! Defending myself!`;
+      return npc.thought;
+    }
     if (action === 'hunt') {
       const weapon =
         (inv.iron_sword ?? 0) > 0
@@ -1171,7 +1203,7 @@ export class OfflineDemoSimulator {
 
     let trace: LlmTrace | undefined;
 
-    if (dist > 0.25) {
+    if (dist > 0.25 && !npc.hostile_target && !npc.threatened_by) {
       const moveSpeed = 2.6 * simDt;
       const stepDist = Math.min(dist, moveSpeed);
       npc.position.x += (dx / dist) * stepDist;
@@ -1188,7 +1220,7 @@ export class OfflineDemoSimulator {
         { x: Math.round((npc.position.x + wp.x) * 0.5), y: sy + 1, z: Math.round((npc.position.z + wp.z) * 0.5) },
         { x: Math.round(wp.x), y: sy + 1, z: Math.round(wp.z) },
       ];
-    } else {
+    } else if (!npc.hostile_target && !npc.threatened_by) {
       npc.path = [];
       npc.animation = wp.action;
       npc.current_action = wp.action;
@@ -1316,6 +1348,9 @@ export class OfflineDemoSimulator {
     };
 
     for (const ag of this.extraAgents) {
+      if (ag.hostile_target || ag.threatened_by) {
+        continue;
+      }
       if (!ag.target) {
         ag.wait = Math.max(0, ag.wait - dt);
         if (ag.wait <= 0) {
@@ -1367,6 +1402,87 @@ export class OfflineDemoSimulator {
         ag.position.y += (dy / dist) * step;
         ag.position.z += (dz / dist) * step;
         ag.animation = 'walking';
+      }
+    }
+
+    this.stepCombat(dt);
+  }
+
+  private stepCombat(dt: number): void {
+    const fighters: NpcState[] = [this.state.npc, ...this.extraAgents];
+    const strikeCooldown = Math.max(0.2, dt * 10);
+    for (const f of [...fighters]) {
+      const fid = f.id ?? 'aiden';
+      const tid = f.threatened_by || f.hostile_target;
+      if (!tid) continue;
+      const target = fighters.find((p, i) => (p.id ?? (i === 0 ? 'aiden' : `npc-${i + 1}`)) === tid);
+      if (!target || target === f) {
+        f.hostile_target = null;
+        f.threatened_by = null;
+        continue;
+      }
+      const dx = target.position.x - f.position.x;
+      const dz = target.position.z - f.position.z;
+      const d = Math.hypot(dx, dz);
+      f.yaw = Math.atan2(dx, dz);
+      const weapon =
+        (f.inventory.iron_sword ?? 0) > 0
+          ? 'iron_sword'
+          : (f.inventory.hunting_bow ?? 0) > 0
+            ? 'hunting_bow'
+            : (f.inventory.wooden_spear ?? 0) > 0
+              ? 'wooden_spear'
+              : null;
+      const reach = weapon === 'hunting_bow' ? 3.2 : 1.7;
+      if (d > reach) {
+        const move = Math.min(d - 1.0, 2.5 * dt);
+        f.position.x += (dx / d) * move;
+        f.position.z += (dz / d) * move;
+        const gx = Math.max(1, Math.min(WORLD_WIDTH - 2, Math.round(f.position.x)));
+        const gz = Math.max(1, Math.min(WORLD_DEPTH - 2, Math.round(f.position.z)));
+        const sy = Math.max(9, this.surfaceY[gz * WORLD_WIDTH + gx]);
+        f.position.y = sy + 1;
+        f.grid_pos = { x: gx, y: sy + 1, z: gz };
+        f.animation = 'walking';
+        f.current_action = 'attack';
+        continue;
+      }
+
+      // Engage & trigger defender self-defense
+      f.animation = 'hunting';
+      f.current_action = 'attack';
+      f.current_goal = f.threatened_by === tid ? `Defending against ${target.name}` : `Attacking ${target.name}`;
+      if (!target.threatened_by) {
+        target.threatened_by = fid;
+        target.thought = `${f.name} attacked me! Defending myself!`;
+      }
+
+      if (this.state.tick % 8 === 0 && strikeCooldown > 0) {
+        const base = weapon === 'iron_sword' ? 34 : weapon === 'hunting_bow' ? 24 : weapon === 'wooden_spear' ? 20 : 11;
+        const dmg = target.threatened_by === fid ? base * 0.8 : base;
+        target.needs.health = Math.max(0, Number((target.needs.health - dmg).toFixed(1)));
+        if (target.needs.health <= 0) {
+          for (const [k, qty] of Object.entries(target.inventory)) {
+            if (qty > 0) {
+              f.inventory[k] = (f.inventory[k] ?? 0) + qty;
+              target.inventory[k] = 0;
+            }
+          }
+          f.hostile_target = null;
+          f.threatened_by = null;
+          if (tid !== 'aiden') {
+            this.extraAgents = this.extraAgents.filter((a) => a.id !== tid);
+            f.thought = `Defeated ${target.name} in combat.`;
+          } else {
+            target.needs.health = 25;
+            target.hostile_target = null;
+            target.threatened_by = null;
+            target.position = { x: 16, y: 11, z: 20 };
+            target.grid_pos = { x: 16, y: 11, z: 20 };
+            target.thought = `Knocked out by ${f.name} and barely recovered!`;
+            f.thought = `Overpowered ${target.name}!`;
+          }
+        }
       }
     }
   }
@@ -1502,21 +1618,34 @@ export class OfflineDemoSimulator {
       this.state.weather = value as WeatherType;
     } else if (action === 'whisper' && typeof value === 'string' && value.trim()) {
       const msg = value.trim();
-      if (agentId === 'all') {
-        this.state.npc.thought = `I heard a whisper: "${msg}"`;
-        for (const ag of this.extraAgents) ag.thought = `I heard a whisper: "${msg}"`;
-      } else if (targetAgent) {
-        targetAgent.thought = `I heard a whisper: "${msg}"`;
-        targetAgent.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: `Whisper: "${msg}"` });
-      } else {
-        this.state.npc.thought = `I heard a whisper: "${msg}"`;
-        this.state.npc.memories.unshift({
-          day: this.state.day,
-          clock: this.state.clock_str,
-          text: `Felt an inspiration: "${msg}"`,
-        });
-        this.state.npc.memories = this.state.npc.memories.slice(0, 15);
+      const low = msg.toLowerCase();
+      const allNpcs: NpcState[] = [this.state.npc, ...this.extraAgents];
+      const stop = ['stop fighting', 'peace', 'cease', 'stand down', 'calm'].some((k) => low.includes(k));
+      const killIntent = ['kill', 'attack', 'fight', 'slay', 'defeat'].some((k) => low.includes(k));
+      const namedTarget = allNpcs.find((p) => low.includes(p.name.toLowerCase()));
+      const recipients =
+        agentId === 'all' ? allNpcs : targetAgent ? [targetAgent] : [this.state.npc];
+      for (const ag of recipients) {
+        const agId = ag.id ?? 'aiden';
+        ag.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: `Whisper: "${msg}"` });
+        if (stop) {
+          ag.hostile_target = null;
+          ag.threatened_by = null;
+          ag.current_action = 'idle';
+          ag.animation = 'idle';
+          ag.thought = 'Standing down as instructed.';
+        } else if (killIntent && namedTarget && (namedTarget.id ?? 'aiden') !== agId) {
+          ag.hostile_target = namedTarget.id ?? 'aiden';
+          ag.current_action = 'attack';
+          ag.animation = 'hunting';
+          ag.thought = `Understood. Moving to attack ${namedTarget.name}!`;
+          namedTarget.threatened_by = agId;
+          namedTarget.thought = `${ag.name} is attacking me! Defending myself!`;
+        } else {
+          ag.thought = `I heard a whisper: "${msg}"`;
+        }
       }
+      this.state.npc.memories = this.state.npc.memories.slice(0, 15);
     } else if (action === 'heal_npc') {
       if (agentId === 'all') {
         this.state.npc.needs = { hunger: 100, energy: 100, thirst: 100, health: 100, mood: 100 };
