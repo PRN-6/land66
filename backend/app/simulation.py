@@ -275,9 +275,17 @@ class NpcAgent:
                 position=xyz(peer.grid_pos),
                 distance=round(distance(self.position, peer.position), 2),
             ))
-        for ent in sorted(self.sim.entities, key=lambda e: distance(self.position, (e["position"]["x"], e["position"]["y"], e["position"]["z"])))[:4]:
-            ep = (ent["position"]["x"], ent["position"]["y"], ent["position"]["z"])
-            nearby.append(dict(type=ent["kind"], label=f"{ent['name']} ({ent['kind']})", position=ent["grid_pos"], distance=round(distance(self.position, ep), 2)))
+        for e in sorted(self.sim.entities, key=lambda e: distance(self.position, (e["position"]["x"], e["position"]["y"], e["position"]["z"])))[:4]:
+            ep = (e["position"]["x"], e["position"]["y"], e["position"]["z"])
+            nearby.append(dict(type=e["kind"], label=f"{e['name']} ({e['kind']})", position=e["grid_pos"], distance=round(distance(self.position, ep), 2)))
+        for d in sorted(self.sim.dropped_items, key=lambda d: distance(self.position, (d["position"]["x"], d["position"]["y"], d["position"]["z"])))[:3]:
+            dp = (d["position"]["x"], d["position"]["y"], d["position"]["z"])
+            nearby.append(dict(
+                type="dropped_item",
+                label=f"{d['amount']}x {d['item'].replace('_', ' ')} ({'landed' if d['landed'] else 'falling'})",
+                position=d["grid_pos"],
+                distance=round(distance(self.position, dp), 2),
+            ))
         visible = [f"{e.get('label') or e['type']} {e['distance']:.0f} blocks away" for e in nearby if e['distance'] <= 12]
         location = ("inside the house" if shelter["sheltered"] else "beside the pond" if any(e['type'] == 'water' and e['distance'] < 4 for e in nearby)
                     else "in the forest" if any(e['type'] == 'tree' and e['distance'] < 4 for e in nearby) else "in the grassy clearing")
@@ -748,6 +756,21 @@ class NpcAgent:
             return
         if self.choose_gate_progression():
             return
+        if sim.dropped_items:
+            landed_drops = [d for d in sim.dropped_items if d.get("landed")]
+            for drop in sorted(
+                landed_drops,
+                key=lambda d: distance(self.position, (d["position"]["x"], d["position"]["y"], d["position"]["z"])),
+            )[:3]:
+                gx, gy, gz = int(drop["grid_pos"]["x"]), int(drop["grid_pos"]["y"]), int(drop["grid_pos"]["z"])
+                walk_spot = sim.world.feet_at(gx, gz, gy) or (gx, gy, gz)
+                if sim.world.walkable(walk_spot) and self.choose(
+                    "walk",
+                    f"I see {drop['amount']}x {drop['item'].replace('_', ' ')} landed on the island. I'll go pick it up!",
+                    "Collect sky-dropped gift",
+                    x=walk_spot[0], y=walk_spot[1], z=walk_spot[2],
+                ):
+                    return
         b = sim.next_build()
         if b:
             if inv[b.material] < b.amount:
@@ -1049,6 +1072,8 @@ class Simulation:
         self.last_weather_period = int(self.elapsed // 90)
         self.entities: list[dict] = []
         self.entity_counter = 0
+        self.dropped_items: list[dict] = []
+        self.dropped_item_counter = 0
         self.agent_counter = 1
         self.home = HomeState()
         start = (16, 11, 22) if self.biome == "market" else (self.world.feet_at(16, 20) or (16, 11, 20))
@@ -1383,6 +1408,7 @@ class Simulation:
                 agents_count=len(self.agents),
             ),
             entities=[dict(e) for e in self.entities],
+            dropped_items=[dict(d) for d in self.dropped_items],
             llm_status=dict(focus.llm_status),
         )
 
@@ -1456,6 +1482,7 @@ class Simulation:
         self.update_ecology(dt)
         self.primary.household.update(dt)
         self.update_entities(dt)
+        self.update_dropped_items(dt)
         for agent in list(self.agents.values()):
             if agent.id in self.agents:
                 agent.step_agent(dt)
@@ -1529,15 +1556,49 @@ class Simulation:
             for ag in targets:
                 ag.needs = dict.fromkeys(ag.needs, 100.0)
         elif action == "drop_gift":
-            gift = value
-            if isinstance(value, dict) and "item" in value:
-                gift = {value["item"]: value.get("amount", 1)}
-            if not isinstance(gift, dict) or not gift or any(k not in INVENTORY_KEYS or type(v) is not int or not 1 <= v <= 1000 for k, v in gift.items()):
+            if not isinstance(value, dict) or not value:
+                raise ValueError("drop_gift value must map inventory keys to integer amounts 1..1000")
+            drop_from_sky = bool(
+                value.get("sky_drop") or value.get("drop_from_sky") or ("x" in value and "z" in value)
+            )
+            drop_x = value.get("x")
+            drop_z = value.get("z")
+            if drop_from_sky and ((drop_x is not None and type(drop_x) is not int) or (drop_z is not None and type(drop_z) is not int)):
+                raise ValueError("drop_gift x and z coordinates must be integers")
+            if "item" in value:
+                amt = value.get("amount", 1)
+                gift = {value["item"]: amt}
+            else:
+                gift = {
+                    k: v
+                    for k, v in value.items()
+                    if k not in {"sky_drop", "drop_from_sky", "x", "y", "z"}
+                }
+            if not isinstance(gift, dict) or not gift or any(
+                k not in INVENTORY_KEYS or type(v) is not int or not 1 <= v <= 1000 for k, v in gift.items()
+            ):
                 raise ValueError("drop_gift value must map inventory keys to integer amounts 1..1000")
             ag = self._resolve_agent(agent_id)
-            for key, amount in gift.items():
-                ag.inventory[key] += amount
-            ag.remember("A gift arrived from above; I will put it to good use.")
+            if drop_from_sky:
+                has_explicit_xz = type(drop_x) is int and type(drop_z) is int
+                for idx, (key, amount) in enumerate(gift.items()):
+                    if has_explicit_xz:
+                        lx = max(0, min(self.world.width - 1, drop_x + (idx % 2 if idx else 0)))
+                        lz = max(0, min(self.world.depth - 1, drop_z + (idx // 2 if idx else 0)))
+                    else:
+                        pref = (
+                            max(1, min(self.world.width - 2, ag.grid_pos[0] + (idx % 3) - 1)),
+                            ag.grid_pos[1],
+                            max(1, min(self.world.depth - 2, ag.grid_pos[2] + (idx // 3) + 1)),
+                        )
+                        spot = self._find_open_spot(pref) or ag.grid_pos
+                        lx, lz = spot[0], spot[2]
+                    self.spawn_dropped_item(key, amount, lx, lz)
+                ag.remember("I saw a supply drop descending from the sky toward the island!")
+            else:
+                for key, amount in gift.items():
+                    ag.inventory[key] += amount
+                ag.remember("A gift arrived from above; I will put it to good use.")
         elif action == "spawn_tree":
             if not isinstance(value, dict) or any(type(value.get(k)) is not int for k in ("x", "z")):
                 raise ValueError("spawn_tree value needs integer x,z and optional integer y")
@@ -1671,6 +1732,97 @@ class Simulation:
         })
         self.primary.remember(f"A {kind} named {name} appeared on the island.")
 
+    def _landing_y_at(self, x: int, z: int) -> int:
+        """Return highest solid land/roof surface y + 1 at column (x, z), passing through leaves/plants."""
+        cx = max(0, min(self.world.width - 1, int(x)))
+        cz = max(0, min(self.world.depth - 1, int(z)))
+        for y in range(self.world.height - 1, -1, -1):
+            b = self.world.get(cx, y, cz)
+            if b not in {AIR, LEAVES, WHEAT, BERRY, SAPLING, TORCH}:
+                return min(self.world.height - 1, y + 1)
+        return 10
+
+    def spawn_dropped_item(self, item: str, amount: int, x: int, z: int, drop_height: float = 12.5) -> dict:
+        """Spawn an item high above column (x, z) so gravity carries it onto the land."""
+        if len(self.dropped_items) >= 48:
+            landed_idx = next((i for i, d in enumerate(self.dropped_items) if d.get("landed")), 0)
+            self.dropped_items.pop(landed_idx)
+        lx = max(0, min(self.world.width - 1, int(x)))
+        lz = max(0, min(self.world.depth - 1, int(z)))
+        ground_y = self._landing_y_at(lx, lz)
+        start_y = round(max(float(ground_y) + 8.0, min(26.0, float(ground_y) + drop_height)), 3)
+        self.dropped_item_counter += 1
+        entry = {
+            "id": f"drop-{self.dropped_item_counter}",
+            "item": item,
+            "amount": int(amount),
+            "position": {"x": float(lx), "y": start_y, "z": float(lz)},
+            "grid_pos": {"x": lx, "y": ground_y, "z": lz},
+            "vy": 0.0,
+            "landed": False,
+            "bounces": 0,
+            "yaw": round(self.rng.uniform(0, math.tau), 3),
+            "age": 0.0,
+        }
+        self.dropped_items.append(entry)
+        return entry
+
+    def update_dropped_items(self, dt: float) -> None:
+        """Simulate gravity, landing bounce, and NPC ground pickup for sky-dropped items."""
+        remaining: list[dict] = []
+        for d in self.dropped_items:
+            d["age"] = round(float(d.get("age", 0.0)) + dt, 3)
+            pos = d["position"]
+            gx = max(0, min(self.world.width - 1, int(round(pos["x"]))))
+            gz = max(0, min(self.world.depth - 1, int(round(pos["z"]))))
+            landing_y = float(self._landing_y_at(gx, gz))
+            d["grid_pos"] = {"x": gx, "y": int(landing_y), "z": gz}
+
+            # Re-enable falling if the block beneath a landed item was erased
+            if d["landed"] and pos["y"] > landing_y + 0.15:
+                d["landed"] = False
+
+            if not d["landed"]:
+                vy = max(-14.0, float(d.get("vy", 0.0)) - 16.0 * dt)
+                next_y = float(pos["y"]) + vy * dt
+                if next_y <= landing_y:
+                    bounces = int(d.get("bounces", 0))
+                    if vy < -2.4 and bounces < 1:
+                        pos["y"] = round(landing_y, 4)
+                        d["vy"] = round(min(3.5, -vy * 0.25), 4)
+                        d["bounces"] = bounces + 1
+                    else:
+                        pos["y"] = round(landing_y, 4)
+                        d["vy"] = 0.0
+                        d["bounces"] = 1
+                        d["landed"] = True
+                        d["landed_age"] = 0.0
+                else:
+                    pos["y"] = round(next_y, 4)
+                    d["vy"] = round(vy, 4)
+                remaining.append(d)
+                continue
+
+            d["landed_age"] = float(d.get("landed_age", 0.5)) + dt
+            picked_up_by = None
+            if d["landed_age"] >= 0.45:
+                for ag in self.agents.values():
+                    horiz = math.hypot(ag.position[0] - pos["x"], ag.position[2] - pos["z"])
+                    if horiz <= 1.45 and abs(ag.position[1] - landing_y) <= 1.8:
+                        picked_up_by = ag
+                        break
+            if picked_up_by is not None:
+                key = str(d["item"])
+                amt = int(d["amount"])
+                if key in picked_up_by.inventory:
+                    picked_up_by.inventory[key] += amt
+                label = key.replace("_", " ")
+                picked_up_by.remember(f"Collected {amt}x {label} that landed on the island.")
+                picked_up_by.thought = f"Nice! I picked up {amt}x {label} from the land."
+            else:
+                remaining.append(d)
+        self.dropped_items = remaining
+
     def update_entities(self, dt: float) -> None:
         if self.biome not in {"market", "flat_sandbox"} and self.tick >= 200 and self.tick % 400 == 0 and len(self.entities) < 4:
             wild_kind = ("deer", "sheep", "fox", "duck")[self.tick // 400 % 4]
@@ -1756,6 +1908,7 @@ class Simulation:
             "blocks_broken": int(self.blocks_broken),
             "last_weather_period": int(self.last_weather_period),
             "entity_counter": int(self.entity_counter),
+            "dropped_item_counter": int(self.dropped_item_counter),
             "agent_counter": int(self.agent_counter),
             "world": self.world.export_state(),
             "home": self.home.export_state(),
@@ -1771,6 +1924,14 @@ class Simulation:
                     "target": list(e["target"]) if e.get("target") else None,
                 }
                 for e in self.entities
+            ],
+            "dropped_items": [
+                {
+                    **d,
+                    "position": dict(d["position"]),
+                    "grid_pos": dict(d["grid_pos"]),
+                }
+                for d in self.dropped_items
             ],
             "agents": [agent.export_save() for agent in self.agents.values()],
         }
@@ -1833,6 +1994,29 @@ class Simulation:
                 "wait": float(e.get("wait", 1.0)),
             })
         sim.entity_counter = max(len(sim.entities), int(data.get("entity_counter", len(sim.entities))))
+        sim.dropped_items = []
+        for d in data.get("dropped_items", []):
+            if not isinstance(d, dict) or not isinstance(d.get("position"), dict) or not isinstance(d.get("grid_pos"), dict):
+                continue
+            item_key = str(d.get("item", "berries"))
+            if item_key not in INVENTORY_KEYS:
+                continue
+            sim.dropped_items.append({
+                "id": str(d.get("id", f"drop-{len(sim.dropped_items) + 1}")),
+                "item": item_key,
+                "amount": max(1, int(d.get("amount", 1))),
+                "position": {k: float(d["position"][k]) for k in ("x", "y", "z")},
+                "grid_pos": {k: int(d["grid_pos"][k]) for k in ("x", "y", "z")},
+                "vy": float(d.get("vy", 0.0)),
+                "landed": bool(d.get("landed", False)),
+                "bounces": int(d.get("bounces", 0)),
+                "yaw": float(d.get("yaw", 0.0)),
+                "age": float(d.get("age", 0.0)),
+                "landed_age": float(d.get("landed_age", 0.5)),
+            })
+        sim.dropped_item_counter = max(
+            len(sim.dropped_items), int(data.get("dropped_item_counter", len(sim.dropped_items)))
+        )
         sim.agent_counter = max(1, int(data.get("agent_counter", 1)))
         sim.home = HomeState.from_state(data.get("home", {}))
         sim.agents = {}

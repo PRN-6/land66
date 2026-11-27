@@ -9,6 +9,7 @@ import {
   type AgentRole,
   type BlockUpdate,
   type DayPhase,
+  type DroppedItem,
   type EntityKind,
   type FloatingWorldId,
   type LlmConfig,
@@ -188,9 +189,11 @@ interface CachedDemoWorld {
   surfaceY: Int8Array;
   state: WorldStateSnapshot;
   entities: DemoEntity[];
+  droppedItems: DroppedItem[];
   extraAgents: DemoAgent[];
   waypoints: Array<{ x: number; z: number; action: string; goal: string; thought: string }>;
   entityCounter: number;
+  droppedItemCounter: number;
   agentCounter: number;
   preset: WorldPresetId | string;
   name: string;
@@ -239,8 +242,10 @@ export class OfflineDemoSimulator {
   private buildQueue: Array<{ x: number; y: number; z: number; block: number; meta?: number }> = [];
   private farmQueue: Array<{ x: number; y: number; z: number }> = [];
   private demoEntities: DemoEntity[] = [];
+  private demoDroppedItems: DroppedItem[] = [];
   private extraAgents: DemoAgent[] = [];
   private entityCounter = 0;
+  private droppedItemCounter = 0;
   private agentCounter = 1;
   private traceCounter = 0;
 
@@ -350,6 +355,7 @@ export class OfflineDemoSimulator {
         entities_count: 0,
       },
       entities: [],
+      dropped_items: [],
       llm_status: {
         provider: 'fallback',
         model: 'offline-demo-sim',
@@ -376,6 +382,11 @@ export class OfflineDemoSimulator {
 
   public getState(): WorldStateSnapshot {
     this.state.entities = this.demoEntities.map(({ target: _t, wait: _w, ...rest }) => rest);
+    this.state.dropped_items = this.demoDroppedItems.map((d) => ({
+      ...d,
+      position: { ...d.position },
+      grid_pos: { ...d.grid_pos },
+    }));
     this.state.stats.entities_count = this.demoEntities.length;
     const primaryAgent: NpcState = {
       ...this.state.npc,
@@ -627,8 +638,10 @@ export class OfflineDemoSimulator {
     const coins = this.state.coins ?? 250;
     this.state = this.createInitialState(seed, this.activeWorldId, coins, this.activeWorldName, this.activePreset);
     this.demoEntities = [];
+    this.demoDroppedItems = [];
     this.extraAgents = [];
     this.entityCounter = 0;
+    this.droppedItemCounter = 0;
     this.agentCounter = 1;
     const reg = this.worldRegistry.find((w) => w.id === this.activeWorldId);
     if (reg) reg.seed = seed;
@@ -654,9 +667,11 @@ export class OfflineDemoSimulator {
       surfaceY: new Int8Array(this.surfaceY),
       state: structuredClone(this.state),
       entities: structuredClone(this.demoEntities),
+      droppedItems: structuredClone(this.demoDroppedItems),
       extraAgents: structuredClone(this.extraAgents),
       waypoints: structuredClone(this.waypoints),
       entityCounter: this.entityCounter,
+      droppedItemCounter: this.droppedItemCounter,
       agentCounter: this.agentCounter,
       preset: this.activePreset,
       name: this.activeWorldName,
@@ -696,8 +711,10 @@ export class OfflineDemoSimulator {
     this.activeWorldName = cleanName;
     this.activePreset = preset;
     this.demoEntities = [];
+    this.demoDroppedItems = [];
     this.extraAgents = [];
     this.entityCounter = 0;
+    this.droppedItemCounter = 0;
     this.agentCounter = 1;
     this.state = this.createInitialState(chosenSeed, wid, prevCoins, cleanName, preset);
     if (payload.starter_name?.trim()) {
@@ -742,9 +759,11 @@ export class OfflineDemoSimulator {
       this.surfaceY = new Int8Array(back.surfaceY);
       this.state = structuredClone(back.state);
       this.demoEntities = structuredClone(back.entities);
+      this.demoDroppedItems = structuredClone(back.droppedItems ?? []);
       this.extraAgents = structuredClone(back.extraAgents);
       this.waypoints = structuredClone(back.waypoints);
       this.entityCounter = back.entityCounter;
+      this.droppedItemCounter = back.droppedItemCounter ?? 0;
       this.agentCounter = back.agentCounter;
     }
     return null;
@@ -787,15 +806,19 @@ export class OfflineDemoSimulator {
       this.surfaceY = new Int8Array(cached.surfaceY);
       this.state = structuredClone(cached.state);
       this.demoEntities = structuredClone(cached.entities);
+      this.demoDroppedItems = structuredClone(cached.droppedItems ?? []);
       this.extraAgents = structuredClone(cached.extraAgents);
       this.waypoints = structuredClone(cached.waypoints);
       this.entityCounter = cached.entityCounter;
+      this.droppedItemCounter = cached.droppedItemCounter ?? 0;
       this.agentCounter = cached.agentCounter;
     } else {
       this.state = this.createInitialState(targetMeta.seed, target, prevCoins, targetMeta.name, targetMeta.preset);
       this.demoEntities = [];
+      this.demoDroppedItems = [];
       this.extraAgents = [];
       this.entityCounter = 0;
+      this.droppedItemCounter = 0;
       this.agentCounter = 1;
       if (targetMeta.preset === 'market') {
         this.generateMarketIsland(targetMeta.seed);
@@ -934,6 +957,114 @@ export class OfflineDemoSimulator {
   private getBlock(x: number, y: number, z: number): number {
     if (x < 0 || x >= WORLD_WIDTH || y < 0 || y >= WORLD_HEIGHT || z < 0 || z >= WORLD_DEPTH) return 0;
     return this.blocks[blockIndex(x, y, z)];
+  }
+
+  private landingTopAt(x: number, z: number): number {
+    const cx = Math.max(0, Math.min(WORLD_WIDTH - 1, Math.floor(x)));
+    const cz = Math.max(0, Math.min(WORLD_DEPTH - 1, Math.floor(z)));
+    for (let y = WORLD_HEIGHT - 1; y >= 0; y--) {
+      const b = this.getBlock(cx, y, cz);
+      if (
+        b !== BlockId.AIR &&
+        b !== BlockId.LEAVES &&
+        b !== BlockId.CROP_WHEAT &&
+        b !== BlockId.WILD_BERRY &&
+        b !== BlockId.SAPLING &&
+        b !== BlockId.TORCH
+      ) {
+        return Math.min(WORLD_HEIGHT - 1, y + 1);
+      }
+    }
+    return Math.max(10, this.surfaceY[cz * WORLD_WIDTH + cx] + 1);
+  }
+
+  private spawnDroppedItem(item: string, amount: number, x: number, z: number): void {
+    if (this.demoDroppedItems.length >= 48) {
+      const idx = this.demoDroppedItems.findIndex((d) => d.landed);
+      this.demoDroppedItems.splice(idx >= 0 ? idx : 0, 1);
+    }
+    const lx = Math.max(0, Math.min(WORLD_WIDTH - 1, Math.round(x)));
+    const lz = Math.max(0, Math.min(WORLD_DEPTH - 1, Math.round(z)));
+    const groundY = this.landingTopAt(lx, lz);
+    const startY = Number(Math.max(groundY + 8, Math.min(26, groundY + 12.5)).toFixed(3));
+    this.droppedItemCounter += 1;
+    this.demoDroppedItems.push({
+      id: `drop-${this.droppedItemCounter}`,
+      item,
+      amount: Math.max(1, Math.round(amount)),
+      position: { x: lx, y: startY, z: lz },
+      grid_pos: { x: lx, y: groundY, z: lz },
+      vy: 0,
+      landed: false,
+      bounces: 0,
+      yaw: this.rng() * Math.PI * 2,
+      age: 0,
+    });
+  }
+
+  private updateDroppedItems(dt: number): void {
+    const remaining: DroppedItem[] = [];
+    const npcs = [this.state.npc, ...this.extraAgents];
+
+    for (const d of this.demoDroppedItems) {
+      d.age = (d.age ?? 0) + dt;
+      const gx = Math.max(0, Math.min(WORLD_WIDTH - 1, Math.round(d.position.x)));
+      const gz = Math.max(0, Math.min(WORLD_DEPTH - 1, Math.round(d.position.z)));
+      const landingY = this.landingTopAt(gx, gz);
+      d.grid_pos = { x: gx, y: landingY, z: gz };
+
+      if (d.landed && d.position.y > landingY + 0.15) {
+        d.landed = false;
+      }
+
+      if (!d.landed) {
+        const vy = Math.max(-14, (d.vy ?? 0) - 16 * dt);
+        const nextY = d.position.y + vy * dt;
+        if (nextY <= landingY) {
+          const bounces = d.bounces ?? 0;
+          if (vy < -2.4 && bounces < 1) {
+            d.position.y = landingY;
+            d.vy = Math.min(3.5, -vy * 0.25);
+            d.bounces = bounces + 1;
+          } else {
+            d.position.y = landingY;
+            d.vy = 0;
+            d.bounces = 1;
+            d.landed = true;
+          }
+        } else {
+          d.position.y = Number(nextY.toFixed(4));
+          d.vy = Number(vy.toFixed(4));
+        }
+        remaining.push(d);
+        continue;
+      }
+
+      if ((d.age ?? 0) >= 1.4) {
+        let collectedBy: NpcState | null = null;
+        for (const ag of npcs) {
+          const horiz = Math.hypot(ag.position.x - d.position.x, ag.position.z - d.position.z);
+          if (horiz <= 1.55 && Math.abs(ag.position.y - landingY) <= 1.8) {
+            collectedBy = ag;
+            break;
+          }
+        }
+        if (collectedBy) {
+          collectedBy.inventory[d.item] = (collectedBy.inventory[d.item] ?? 0) + d.amount;
+          const label = d.item.replace(/_/g, ' ');
+          collectedBy.thought = `Nice! I picked up ${d.amount}x ${label} from the land.`;
+          collectedBy.memories.unshift({
+            day: this.state.day,
+            clock: this.state.clock_str,
+            text: `Collected ${d.amount}x ${label} dropped onto the island.`,
+          });
+          continue;
+        }
+      }
+      remaining.push(d);
+    }
+
+    this.demoDroppedItems = remaining;
   }
 
   private surfaceTopAt(x: number, z: number): number {
@@ -1534,6 +1665,7 @@ export class OfflineDemoSimulator {
     }
 
     this.updateEntities(simDt);
+    this.updateDroppedItems(simDt);
     this.updateExtraAgents(simDt);
     this.stepAutonomousGate(blockUpdates);
 
@@ -2052,16 +2184,36 @@ export class OfflineDemoSimulator {
         this.state.npc.needs = { hunger: 100, energy: 100, thirst: 100, health: 100, mood: 100 };
       }
     } else if (action === 'drop_gift' && typeof value === 'object' && value !== null) {
-      const inv = targetAgent ? targetAgent.inventory : this.state.npc.inventory;
+      const targetNpc = targetAgent ?? this.state.npc;
       const gift = value as Record<string, unknown>;
-      if (typeof gift.item === 'string') {
-        const amt = Number(gift.amount ?? 1);
-        inv[gift.item] = (inv[gift.item] ?? 0) + amt;
+      const skyDrop = Boolean(gift.sky_drop || gift.drop_from_sky || (typeof gift.x === 'number' && typeof gift.z === 'number'));
+      const entries: Array<[string, number]> =
+        typeof gift.item === 'string'
+          ? [[gift.item, Math.max(1, Number(gift.amount ?? 1))]]
+          : Object.entries(gift).filter(
+              (e): e is [string, number] =>
+                !['sky_drop', 'drop_from_sky', 'x', 'y', 'z'].includes(e[0]) && typeof e[1] === 'number',
+            );
+      if (skyDrop) {
+        entries.forEach(([item, amt], idx) => {
+          const lx =
+            typeof gift.x === 'number'
+              ? gift.x + (idx > 0 ? idx % 2 : 0)
+              : Math.max(4, Math.min(WORLD_WIDTH - 5, targetNpc.grid_pos.x + (idx % 3) - 1));
+          const lz =
+            typeof gift.z === 'number'
+              ? gift.z + (idx > 0 ? Math.floor(idx / 2) : 0)
+              : Math.max(4, Math.min(WORLD_DEPTH - 5, targetNpc.grid_pos.z + Math.floor(idx / 3) + 1));
+          this.spawnDroppedItem(item, amt, lx, lz);
+        });
+        targetNpc.memories.unshift({
+          day: this.state.day,
+          clock: this.state.clock_str,
+          text: 'Spotted a supply drop drifting down from the sky!',
+        });
       } else {
-        for (const [k, v] of Object.entries(gift)) {
-          if (typeof v === 'number') {
-            inv[k] = (inv[k] ?? 0) + v;
-          }
+        for (const [k, v] of entries) {
+          targetNpc.inventory[k] = (targetNpc.inventory[k] ?? 0) + v;
         }
       }
     } else if (action === 'spawn_tree') {
@@ -2210,6 +2362,11 @@ export class OfflineDemoSimulator {
         ),
       },
       entities: this.demoEntities.map((e) => ({ ...e })),
+      dropped_items: this.demoDroppedItems.map((d) => ({
+        ...d,
+        position: { ...d.position },
+        grid_pos: { ...d.grid_pos },
+      })),
       agents: state.agents?.map((a, idx) => serializeAgent(a, idx)) ?? [serializeAgent(state.npc, 0)],
       brains: {},
     };
@@ -2393,6 +2550,27 @@ export class OfflineDemoSimulator {
       });
     }
     this.entityCounter = Math.max(this.demoEntities.length, Number(payload.entity_counter ?? this.demoEntities.length));
+    this.demoDroppedItems = [];
+    const rawDrops = Array.isArray(payload.dropped_items)
+      ? (payload.dropped_items as Array<Record<string, unknown>>)
+      : [];
+    for (const d of rawDrops) {
+      const pos = parseVec(d.position, { x: 15, y: 11, z: 15 });
+      const grid = parseVec(d.grid_pos, { x: Math.round(pos.x), y: Math.round(pos.y), z: Math.round(pos.z) });
+      this.demoDroppedItems.push({
+        id: String(d.id ?? `drop-${this.demoDroppedItems.length + 1}`),
+        item: String(d.item ?? 'berries'),
+        amount: Math.max(1, Number(d.amount ?? 1)),
+        position: pos,
+        grid_pos: grid,
+        vy: Number(d.vy ?? 0),
+        landed: Boolean(d.landed),
+        bounces: Number(d.bounces ?? 0),
+        yaw: Number(d.yaw ?? 0),
+        age: Number(d.age ?? 0),
+      });
+    }
+    this.droppedItemCounter = this.demoDroppedItems.length;
     if (this.waypoints.length === 0) {
       this.waypoints = [
         { x: 16, z: 18, action: 'exploring', goal: `Explore ${rawWorldName}`, thought: `Continuing life inside ${rawWorldName}.` },
@@ -2454,6 +2632,11 @@ export class OfflineDemoSimulator {
             ),
           },
           entities: cached.entities.map((e) => ({ ...e })),
+          dropped_items: (cached.droppedItems ?? []).map((d) => ({
+            ...d,
+            position: { ...d.position },
+            grid_pos: { ...d.grid_pos },
+          })),
           agents: agents.map((a, idx) => ({
             id: a.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`),
             name: a.name,
@@ -2544,9 +2727,11 @@ export class OfflineDemoSimulator {
       this.surfaceY = new Int8Array(targetCached.surfaceY);
       this.state = structuredClone(targetCached.state);
       this.demoEntities = structuredClone(targetCached.entities);
+      this.demoDroppedItems = structuredClone(targetCached.droppedItems ?? []);
       this.extraAgents = structuredClone(targetCached.extraAgents);
       this.waypoints = structuredClone(targetCached.waypoints);
       this.entityCounter = targetCached.entityCounter;
+      this.droppedItemCounter = targetCached.droppedItemCounter ?? 0;
       this.agentCounter = targetCached.agentCounter;
       return true;
     } catch {

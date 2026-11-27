@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  ArrowDownToLine,
   Box,
   Brain,
   Eraser,
@@ -28,8 +29,8 @@ interface GodDockProps {
   agents: NpcState[];
   selectedAgentId: string;
   activeTool: GodTool;
-  tray: 'objects' | 'life' | 'world' | null;
-  onSetTray: (tray: 'objects' | 'life' | 'world' | null) => void;
+  tray: 'objects' | 'life' | 'world' | 'drop' | null;
+  onSetTray: (tray: 'objects' | 'life' | 'world' | 'drop' | null) => void;
   onSelectTool: (tool: GodTool) => void;
   onSelectAgent: (agentId: string) => void;
   onOpenBrainForAgent: (agentId: string) => void;
@@ -99,6 +100,27 @@ const WILDLIFE: Array<{ kind: EntityKind; label: string; tag: string }> = [
   { kind: 'villager', label: 'Villager', tag: 'Ambient' },
 ];
 
+const SKY_DROP_ITEMS: Array<{ item: string; label: string; group: string; swatch: string }> = [
+  { item: 'berries', label: 'Berries', group: 'Food', swatch: '#e11d48' },
+  { item: 'bread', label: 'Bread', group: 'Food', swatch: '#eab308' },
+  { item: 'cooked_meat', label: 'Cooked Meat', group: 'Food', swatch: '#b45309' },
+  { item: 'seeds', label: 'Seeds', group: 'Food', swatch: '#84cc16' },
+  { item: 'wood_log', label: 'Wood Log', group: 'Supply', swatch: '#78513a' },
+  { item: 'wood_plank', label: 'Planks', group: 'Supply', swatch: '#c89b66' },
+  { item: 'stone', label: 'Stone', group: 'Supply', swatch: '#94a3b8' },
+  { item: 'iron_ore', label: 'Iron Ore', group: 'Ore', swatch: '#b08968' },
+  { item: 'gold_ore', label: 'Gold Ore', group: 'Ore', swatch: '#fbbf24' },
+  { item: 'crystal', label: 'Crystal', group: 'Gate', swatch: '#38bdf8' },
+  { item: 'obsidian', label: 'Obsidian', group: 'Gate', swatch: '#312e4a' },
+  { item: 'marble', label: 'White Marble', group: 'Gate', swatch: '#f1efe8' },
+  { item: 'sunstone', label: 'Sunstone', group: 'Gate', swatch: '#f59e0b' },
+  { item: 'wooden_spear', label: 'Wooden Spear', group: 'Gear', swatch: '#a16207' },
+  { item: 'hunting_bow', label: 'Hunting Bow', group: 'Gear', swatch: '#92400e' },
+  { item: 'iron_sword', label: 'Iron Sword', group: 'Gear', swatch: '#d1d5db' },
+  { item: 'axe', label: 'Axe', group: 'Gear', swatch: '#9ca3af' },
+  { item: 'pickaxe', label: 'Pickaxe', group: 'Gear', swatch: '#9ca3af' },
+];
+
 export function GodDock({
   state,
   agents,
@@ -122,8 +144,9 @@ export function GodDock({
   const [whisperText, setWhisperText] = useState('');
   const [whisperTarget, setWhisperTarget] = useState<'selected' | 'all'>('selected');
   const [giftItem, setGiftItem] = useState('berries');
+  const [dropAmount, setDropAmount] = useState(3);
 
-  const toggleTray = (next: 'objects' | 'life' | 'world') => {
+  const toggleTray = (next: 'objects' | 'life' | 'world' | 'drop') => {
     onSetTray(tray === next ? null : next);
   };
 
@@ -149,8 +172,24 @@ export function GodDock({
           <span>
             {activeTool.mode === 'erase'
               ? 'Click any block on the island to remove'
-              : `Click island to place ${activeTool.label}`}
+              : activeTool.mode === 'drop_item'
+                ? `Click anywhere on the island to drop ${activeTool.label} x${activeTool.amount} from the sky`
+                : `Click island to place ${activeTool.label}`}
           </span>
+          {activeTool.mode === 'drop_item' && (
+            <button
+              onClick={() =>
+                onGodIntervene(
+                  'drop_gift',
+                  { item: activeTool.item, amount: activeTool.amount, sky_drop: true },
+                  selectedAgentId,
+                )
+              }
+              className="px-2 py-0.5 rounded-full bg-white text-neutral-950 font-medium text-[10px] hover:bg-neutral-200 cursor-pointer"
+            >
+              Drop Above {selectedNpc.name}
+            </button>
+          )}
           {activeTool.mode === 'object' && (
             <button
               onClick={() =>
@@ -248,6 +287,81 @@ export function GodDock({
                   </div>
                   <div className={`text-[9px] mt-0.5 ${selected ? 'text-neutral-600' : 'text-neutral-500'}`}>
                     {obj.group}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Sky Drop Items Tray */}
+      {tray === 'drop' && (
+        <div className="w-[34rem] max-w-[calc(100vw-1.5rem)] p-3 rounded-2xl bg-neutral-950/90 backdrop-blur-2xl border border-white/10 shadow-2xl space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-[11px] font-medium text-neutral-200">
+                Sky Drop Supplies (Lands on Ground)
+              </div>
+              <div className="text-[10px] text-neutral-400">
+                Pick an item to click-drop from the sky anywhere on the island, or drop above {selectedNpc.name}.
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              {[1, 3, 5, 10].map((qty) => (
+                <button
+                  key={qty}
+                  onClick={() => {
+                    setDropAmount(qty);
+                    if (activeTool.mode === 'drop_item') {
+                      onSelectTool({ ...activeTool, amount: qty });
+                    }
+                  }}
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-mono transition cursor-pointer ${
+                    dropAmount === qty
+                      ? 'bg-white text-neutral-950 font-semibold'
+                      : 'text-neutral-400 hover:text-white bg-neutral-900 border border-white/10'
+                  }`}
+                >
+                  ×{qty}
+                </button>
+              ))}
+              <button onClick={() => onSetTray(null)} className="ml-1 text-neutral-500 hover:text-white cursor-pointer">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 max-h-56 overflow-y-auto hud-scroll pr-0.5">
+            {SKY_DROP_ITEMS.map((entry) => {
+              const selected = activeTool.mode === 'drop_item' && activeTool.item === entry.item;
+              return (
+                <button
+                  key={entry.item}
+                  onClick={() => {
+                    onSelectTool({
+                      mode: 'drop_item',
+                      item: entry.item,
+                      amount: dropAmount,
+                      label: entry.label,
+                    });
+                    onSetTray(null);
+                  }}
+                  className={`px-2 py-1.5 rounded-xl border text-left transition cursor-pointer ${
+                    selected
+                      ? 'bg-white text-neutral-950 border-white font-medium'
+                      : 'bg-neutral-900/80 border-white/5 text-neutral-200 hover:border-white/25 hover:bg-neutral-800/80'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0 border border-white/20"
+                      style={{ backgroundColor: entry.swatch }}
+                    />
+                    <span className="text-[11px] truncate">{entry.label}</span>
+                  </div>
+                  <div className={`text-[9px] mt-0.5 ${selected ? 'text-neutral-600' : 'text-neutral-500'}`}>
+                    {entry.group}
                   </div>
                 </button>
               );
@@ -577,13 +691,17 @@ export function GodDock({
               onClick={() =>
                 onGodIntervene(
                   'drop_gift',
-                  { [giftItem]: ['wooden_spear', 'hunting_bow', 'iron_sword'].includes(giftItem) ? 1 : 3 },
+                  {
+                    item: giftItem,
+                    amount: ['wooden_spear', 'hunting_bow', 'iron_sword'].includes(giftItem) ? 1 : 3,
+                    sky_drop: true,
+                  },
                   selectedAgentId,
                 )
               }
               className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 border border-white/10 text-[11px] text-white cursor-pointer"
             >
-              Gift {selectedNpc.name}
+              Drop to {selectedNpc.name}
             </button>
             <button
               onClick={() => onGodIntervene('heal_npc', undefined, whisperTarget === 'all' ? 'all' : selectedAgentId)}
@@ -622,6 +740,18 @@ export function GodDock({
         >
           <Box className="w-3.5 h-3.5" />
           <span>Objects</span>
+        </button>
+
+        <button
+          onClick={() => toggleTray('drop')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition cursor-pointer ${
+            tray === 'drop' || activeTool.mode === 'drop_item'
+              ? 'bg-white text-neutral-950 font-medium'
+              : 'text-neutral-300 hover:text-white hover:bg-white/10'
+          }`}
+        >
+          <ArrowDownToLine className="w-3.5 h-3.5" />
+          <span>Sky Drop</span>
         </button>
 
         <button

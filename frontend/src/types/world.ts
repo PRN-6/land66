@@ -211,6 +211,19 @@ export interface WorldEntity {
   animation: string;
 }
 
+export interface DroppedItem {
+  id: string;
+  item: string;
+  amount: number;
+  position: Vec3;
+  grid_pos: Vec3;
+  vy: number;
+  landed: boolean;
+  bounces?: number;
+  yaw: number;
+  age?: number;
+}
+
 export interface LlmStatus {
   provider: string;
   model: string;
@@ -281,6 +294,7 @@ export interface WorldStateSnapshot {
   agents?: NpcState[];
   stats: WorldStats;
   entities?: WorldEntity[];
+  dropped_items?: DroppedItem[];
   llm_status: LlmStatus;
 }
 
@@ -420,6 +434,10 @@ export type InspectTarget =
   | {
       kind: 'entity';
       entity: WorldEntity;
+    }
+  | {
+      kind: 'dropped_item';
+      droppedItem: DroppedItem;
     };
 
 export type GodTool =
@@ -427,7 +445,8 @@ export type GodTool =
   | { mode: 'erase' }
   | { mode: 'object'; object: string; label: string; material?: string }
   | { mode: 'entity'; kind: EntityKind; label: string; customName?: string }
-  | { mode: 'agent'; role: AgentRole; label: string; customName?: string };
+  | { mode: 'agent'; role: AgentRole; label: string; customName?: string }
+  | { mode: 'drop_item'; item: string; amount: number; label: string };
 
 export interface SaveSlotSummary {
   slot: string;
@@ -475,6 +494,7 @@ export interface WorldSavePayload {
   berry_regrowth?: unknown[];
   sapling_age?: unknown[];
   entities?: unknown[];
+  dropped_items?: unknown[];
   agents: unknown[];
   brains?: Record<string, unknown>;
   [key: string]: unknown;

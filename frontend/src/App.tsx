@@ -52,7 +52,7 @@ export function App() {
   const [showThoughtBubble, setShowThoughtBubble] = useState(true);
   const [showPath, setShowPath] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [dockTray, setDockTray] = useState<'objects' | 'life' | 'world' | null>(null);
+  const [dockTray, setDockTray] = useState<'objects' | 'life' | 'world' | 'drop' | null>(null);
   const [llmModalOpen, setLlmModalOpen] = useState(false);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [shopModalOpen, setShopModalOpen] = useState(false);
@@ -244,6 +244,18 @@ export function App() {
             y: placeCoord.y,
             z: placeCoord.z,
           });
+        } else if (tool.mode === 'drop_item') {
+          void handleGodIntervene(
+            'drop_gift',
+            {
+              item: tool.item,
+              amount: tool.amount,
+              x: placeCoord.x,
+              z: placeCoord.z,
+              sky_drop: true,
+            },
+            selectedAgentId,
+          );
         } else if (tool.mode === 'agent') {
           void handleCreateAgent({
             name: tool.customName,

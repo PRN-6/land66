@@ -484,3 +484,47 @@ def test_fixed_npc_ai_preserved_across_apply_all_lock_and_reload(tmp_path, monke
         assert unlocked.status_code == 200 and unlocked.json()['locked'] is False
         changed = client2.post('/api/llm/config?agent_id=aiden', json={'provider': 'fallback', 'enabled': False})
         assert changed.status_code == 200 and changed.json()['provider'] == 'fallback'
+
+
+def test_sky_drop_item_falls_lands_and_is_collected():
+    with TestClient(client_app()) as client:
+        client.post('/api/sim/control', json={'action': 'pause'})
+        initial_state = client.get('/api/state').json()
+        ax = initial_state['npc']['grid_pos']['x']
+        az = initial_state['npc']['grid_pos']['z']
+        far_x, far_z = (11, 14)
+
+        # Dropping at (x, z) with sky_drop=True spawns an airborne falling bundle high above ground
+        drop_far = client.post(
+            '/api/god/intervene',
+            json={'action': 'drop_gift', 'value': {'item': 'bread', 'amount': 4, 'x': far_x, 'z': far_z, 'sky_drop': True}},
+        )
+        assert drop_far.status_code == 200
+        st1 = client.get('/api/state').json()
+        assert len(st1['dropped_items']) == 1
+        d_air = st1['dropped_items'][0]
+        assert d_air['item'] == 'bread' and d_air['amount'] == 4
+        assert d_air['landed'] is False
+        assert d_air['position']['y'] >= d_air['grid_pos']['y'] + 8.0
+
+        # Step simulation until gravity pulls the falling item onto solid ground
+        rt = client.app.state.runtime
+        for _ in range(45):
+            rt.sim.step(0.1, force=True)
+        st2 = client.get('/api/state').json()
+        landed_far = next(d for d in st2['dropped_items'] if d['id'] == d_air['id'])
+        assert landed_far['landed'] is True
+        assert abs(landed_far['position']['y'] - landed_far['grid_pos']['y']) < 0.01
+
+        # Dropping directly at NPC location falls, lands on terrain, and gets collected into inventory
+        before_sunstone = st2['npc']['inventory']['sunstone']
+        drop_near = client.post(
+            '/api/god/intervene',
+            json={'action': 'drop_gift', 'value': {'item': 'sunstone', 'amount': 5, 'x': ax, 'z': az, 'sky_drop': True}},
+        )
+        assert drop_near.status_code == 200
+        for _ in range(55):
+            rt.sim.step(0.1, force=True)
+        st3 = client.get('/api/state').json()
+        assert st3['npc']['inventory']['sunstone'] == before_sunstone + 5
+        assert all(d['item'] != 'sunstone' for d in st3['dropped_items'])

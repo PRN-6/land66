@@ -27,6 +27,7 @@ import {
 } from './voxelMesher';
 import { NpcModel } from './npcModel';
 import { EntityManager } from './entityModels';
+import { DroppedItemManager } from './droppedItemModels';
 import { AtmosphereSystem } from './atmosphere';
 import { WorldEffects } from './particles';
 
@@ -64,6 +65,7 @@ export class VoxelWorldScene {
   private lastSnapshot: WorldStateSnapshot | null = null;
 
   private entityManager: EntityManager;
+  private droppedItemManager: DroppedItemManager;
   private atmosphere: AtmosphereSystem;
   private effects: WorldEffects;
 
@@ -135,6 +137,7 @@ export class VoxelWorldScene {
     this.agentsGroup.name = 'ai_agents';
     this.scene.add(this.agentsGroup);
     this.entityManager = new EntityManager(this.scene);
+    this.droppedItemManager = new DroppedItemManager(this.scene);
 
     this.atmosphere = new AtmosphereSystem(this.scene);
     this.atmosphere.setWaterNormalMap(this.mats.waterNormalMap);
@@ -180,9 +183,10 @@ export class VoxelWorldScene {
     clientX: number,
     clientY: number,
   ): {
-    hitKind: 'npc' | 'entity' | 'block';
+    hitKind: 'npc' | 'entity' | 'dropped_item' | 'block';
     agentId?: string;
     entityId?: string;
+    droppedItemId?: string;
     hitCoord?: { x: number; y: number; z: number };
     placeCoord?: { x: number; y: number; z: number };
   } | null {
@@ -193,7 +197,7 @@ export class VoxelWorldScene {
     );
     this.raycaster.setFromCamera(ndc, this.camera);
 
-    const targets: THREE.Object3D[] = [this.agentsGroup, this.entityManager.group];
+    const targets: THREE.Object3D[] = [this.agentsGroup, this.entityManager.group, this.droppedItemManager.group];
     if (this.dioramaRoot) targets.push(this.dioramaRoot);
 
     const hits = this.raycaster.intersectObjects(targets, true);
@@ -208,6 +212,9 @@ export class VoxelWorldScene {
     }
     if (hit.object.userData.entityId) {
       return { hitKind: 'entity', entityId: String(hit.object.userData.entityId) };
+    }
+    if (hit.object.userData.droppedItemId) {
+      return { hitKind: 'dropped_item', droppedItemId: String(hit.object.userData.droppedItemId) };
     }
     if (hit.object.userData.blockCoord) {
       const coord = hit.object.userData.blockCoord as { x: number; y: number; z: number };
@@ -285,6 +292,11 @@ export class VoxelWorldScene {
     if (res.hitKind === 'entity' && res.entityId) {
       const ent = this.entityManager.getEntityById(res.entityId);
       this.callbacks.onSelectTarget(ent ? { kind: 'entity', entity: ent } : null);
+      return;
+    }
+    if (res.hitKind === 'dropped_item' && res.droppedItemId) {
+      const droppedItem = this.droppedItemManager.getItemById(res.droppedItemId);
+      this.callbacks.onSelectTarget(droppedItem ? { kind: 'dropped_item', droppedItem } : null);
       return;
     }
     if (res.hitCoord) {
@@ -436,6 +448,7 @@ export class VoxelWorldScene {
     }
 
     this.entityManager.sync(state.entities ?? []);
+    this.droppedItemManager.sync(state.dropped_items ?? []);
     this.refreshSelectionEffects(state);
   }
 
@@ -528,6 +541,9 @@ export class VoxelWorldScene {
       }
     }
     this.entityManager.update(dt);
+    this.droppedItemManager.update(dt, (bx, by, bz, colorHex) => {
+      this.effects.spawnBlockBurst(bx, by, bz, colorHex, 8);
+    });
 
     this.atmosphere.update(dt, this.elapsed, this.timeOfDay, this.weather, this.scene);
     this.effects.update(dt, this.elapsed);

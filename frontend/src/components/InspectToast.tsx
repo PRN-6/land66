@@ -1,4 +1,4 @@
-import { Box, User, Users, X } from 'lucide-react';
+import { Box, Package, User, Users, X } from 'lucide-react';
 import { getWorldMaterial } from '../engine/materialCatalog';
 import {
   BLOCK_LABELS,
@@ -35,6 +35,8 @@ export function InspectToast({ target, state, agents, onClose, onOpenShop, onOpe
               <User className="w-4 h-4" />
             ) : target.kind === 'entity' ? (
               <Users className="w-4 h-4" />
+            ) : target.kind === 'dropped_item' ? (
+              <Package className="w-4 h-4" />
             ) : (
               <Box className="w-4 h-4" />
             )}
@@ -59,6 +61,17 @@ export function InspectToast({ target, state, agents, onClose, onOpenShop, onOpe
                 <div className="text-[11px] text-neutral-400 font-mono">
                   ({target.entity.grid_pos.x}, {target.entity.grid_pos.y}, {target.entity.grid_pos.z}) ·{' '}
                   {target.entity.animation}
+                </div>
+              </>
+            ) : target.kind === 'dropped_item' ? (
+              <>
+                <div className="text-xs font-semibold text-white capitalize">
+                  {target.droppedItem.item.replace(/_/g, ' ')} ×{target.droppedItem.amount}
+                </div>
+                <div className="text-[11px] text-neutral-400 font-mono">
+                  {target.droppedItem.landed
+                    ? `Landed at (${target.droppedItem.grid_pos.x}, ${target.droppedItem.grid_pos.y}, ${target.droppedItem.grid_pos.z})`
+                    : `Falling onto (${target.droppedItem.grid_pos.x}, ${target.droppedItem.grid_pos.y}, ${target.droppedItem.grid_pos.z})`}
                 </div>
               </>
             ) : target.kind === 'block' ? (
