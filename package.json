@@ -1,0 +1,10 @@
+{
+  "name": "land66",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "node -e \"const cp=require('child_process'),fs=require('fs'),path=require('path');const v=[path.join('backend','.venv','Scripts','python.exe'),path.join('backend','.venv','bin','python')].find(p=>fs.existsSync(p));const py=v||(process.platform==='win32'?'python':'python3');const args=process.argv.slice(1).filter(a=>a!=='--');const r=cp.spawnSync(py,['run.py',...args],{stdio:'inherit'});process.exit(r.status??0);\" --",
+    "start": "npm run dev",
+    "test": "npm run dev -- --test"
+  }
+}
