@@ -1539,6 +1539,7 @@ export class OfflineDemoSimulator {
 
     this.updateEntities(simDt);
     this.updateExtraAgents(simDt);
+    this.stepAutonomousGate(blockUpdates);
 
     if (this.state.tick % 20 === 0) {
       let ripe = 0;
@@ -1791,6 +1792,65 @@ export class OfflineDemoSimulator {
           }
         }
       }
+    }
+  }
+
+  private stepAutonomousGate(updates: BlockUpdate[]): void {
+    if (this.activeWorldId !== 'homestead' || this.state.tick < 18 || this.state.tick % 24 !== 0) return;
+    const npc = this.state.npc;
+    if (npc.hostile_target || npc.threatened_by) return;
+    const gate = this.getGateState();
+    if (gate.unlocked) return;
+
+    if (!this.gateClues.anchor) {
+      this.gateClues.anchor = true;
+      npc.current_action = 'study_gate';
+      npc.current_goal = 'Decipher Sky Teleport Gate runes';
+      npc.thought = 'Studied the West Clearing plinth: Obsidian crust anchors the portal foundation!';
+      npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: npc.thought });
+      return;
+    }
+    if (!this.gateClues.conduit) {
+      this.gateClues.conduit = true;
+      npc.current_action = 'study_gate';
+      npc.current_goal = 'Decipher Sky Teleport Gate runes';
+      npc.thought = 'Decoded the pillars: White Marble columns crowned with glowing Crystal conduits!';
+      npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: npc.thought });
+      return;
+    }
+    if (!this.gateClues.core) {
+      this.gateClues.core = true;
+      npc.current_action = 'study_gate';
+      npc.current_goal = 'Build Sky Teleport Gate';
+      npc.thought = 'Solved Rune III! Crystal + Gold Ore forges the radiant Sunstone keystone!';
+      npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: npc.thought });
+      return;
+    }
+
+    const nextPart = DEMO_GATE_ARCH.find((p) => {
+      const idx = blockIndex(p.x, p.y, p.z);
+      return !(this.blocks[idx] === BlockId.STONE && this.blockMaterials[idx] === p.surface);
+    });
+    if (!nextPart) return;
+
+    this.setBlock(nextPart.x, nextPart.y, nextPart.z, BlockId.STONE, 0, nextPart.surface);
+    this.state.stats.blocks_placed += 1;
+    updates.push({
+      x: nextPart.x,
+      y: nextPart.y,
+      z: nextPart.z,
+      block: BlockId.STONE,
+      meta: 0,
+      material: nextPart.surface,
+    });
+    npc.current_action = 'build_gate';
+    npc.current_goal = 'Build Sky Teleport Gate';
+    const done = this.getGateState().unlocked;
+    npc.thought = done
+      ? 'Finished assembling the Sky Teleport Gate! The portal to Sky Market is alive!'
+      : `Gathered & placed ${nextPart.surface.replace(/_/g, ' ')} onto the Teleport Gate arch.`;
+    if (done) {
+      npc.memories.unshift({ day: this.state.day, clock: this.state.clock_str, text: npc.thought });
     }
   }
 

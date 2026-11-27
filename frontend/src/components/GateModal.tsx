@@ -25,12 +25,14 @@ interface GateModalProps {
 const RUNES: Array<{
   key: 'anchor' | 'conduit' | 'core';
   title: string;
+  discoveryText: string;
   riddle: string;
   options: Array<{ id: string; label: string }>;
 }> = [
   {
     key: 'anchor',
     title: 'Rune I · Pillar Foundation',
+    discoveryText: 'Obsidian crust anchors the portal foundation.',
     riddle: 'What dense dark volcanic rock from the deepest island crust anchors portal gravity?',
     options: [
       { id: 'granite', label: 'Granite' },
@@ -42,6 +44,7 @@ const RUNES: Array<{
   {
     key: 'conduit',
     title: 'Rune II · Arch Columns & Conduits',
+    discoveryText: 'White Marble columns crowned with glowing Crystal channel sky energy.',
     riddle: 'What glowing sea-blue gem channels portal light atop White Marble columns?',
     options: [
       { id: 'iron_ore', label: 'Iron Ore' },
@@ -53,6 +56,7 @@ const RUNES: Array<{
   {
     key: 'core',
     title: 'Rune III · Keystone Core',
+    discoveryText: 'Crystal + Gold Ore forges the radiant Sunstone keystone.',
     riddle: 'What radiant amber stone crafted from Crystal + Gold Ore crowns the arch?',
     options: [
       { id: 'copper_ingot', label: 'Copper' },
@@ -64,10 +68,10 @@ const RUNES: Array<{
 ];
 
 const GATE_COSTS: Array<{ key: string; label: string; total: number; hint: string }> = [
-  { key: 'obsidian', label: 'Obsidian', total: 2, hint: 'Gather from dark outcrops' },
-  { key: 'marble', label: 'White Marble', total: 2, hint: 'Gather from pale stone outcrops' },
-  { key: 'crystal', label: 'Crystal', total: 2, hint: 'Gather from glowing crystal veins' },
-  { key: 'sunstone', label: 'Sunstone Core', total: 1, hint: 'Craft: Crystal + Gold Ore' },
+  { key: 'obsidian', label: 'Obsidian', total: 2, hint: 'Mined from dark outcrops' },
+  { key: 'marble', label: 'White Marble', total: 2, hint: 'Mined from pale stone veins' },
+  { key: 'crystal', label: 'Crystal', total: 2, hint: 'Gathered from glowing crystal veins' },
+  { key: 'sunstone', label: 'Sunstone Core', total: 1, hint: 'Crafted from Crystal + Gold Ore' },
 ];
 
 export const GateModal: React.FC<GateModalProps> = ({
@@ -146,7 +150,7 @@ export const GateModal: React.FC<GateModalProps> = ({
               <p className="text-[11px] text-neutral-400">
                 {gate.unlocked
                   ? 'Rift stabilized between Homestead Island & Sky Market'
-                  : 'Decipher the ancient plinth runes at West Clearing (10, 11, 15) to build the portal'}
+                  : `Autonomous Quest · ${selectedAgent.name} is studying the West Clearing ruins & assembling the portal`}
               </p>
             </div>
           </div>
@@ -187,65 +191,84 @@ export const GateModal: React.FC<GateModalProps> = ({
             </div>
           ) : (
             <>
-              {/* Step 1: Decipher Runes */}
-              <div className="space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+              {/* Live NPC Autonomous Activity Card */}
+              <div className="rounded-xl border border-white/12 bg-neutral-900/80 p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-neutral-400">
+                      {selectedAgent.name} · Autonomous Progress
+                    </div>
+                    <div className="text-xs font-medium text-white mt-0.5">
+                      {selectedAgent.current_goal}
+                    </div>
+                  </div>
+                  <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-mono text-neutral-200">
+                    {selectedAgent.current_action}
+                  </span>
+                </div>
+                <p className="text-[11px] text-neutral-400">“{selectedAgent.thought}”</p>
+                {worldId === 'homestead' && (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {!gate.discovered ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleStudy()}
+                        className="rounded-lg bg-white px-3 py-1.5 text-[11px] font-semibold text-neutral-950 hover:bg-neutral-200 disabled:opacity-45 cursor-pointer"
+                      >
+                        Nudge {selectedAgent.name}: Study Ruins Next
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleBuild('npc')}
+                        className="rounded-lg bg-white px-3 py-1.5 text-[11px] font-semibold text-neutral-950 hover:bg-neutral-200 disabled:opacity-45 cursor-pointer"
+                      >
+                        Nudge {selectedAgent.name}: Gather & Build Next Block
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Step 1: NPC Discovery Progress */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
                     <HelpCircle className="h-3.5 w-3.5 text-neutral-300" />
                     <span className="text-xs font-medium text-white">
-                      Step 1 · Figure Out the Schematic ({solvedCount}/3 Runes)
+                      Phase 1 · Plinth Rune Discovery ({solvedCount}/3)
                     </span>
                   </div>
-                  {!gate.discovered && worldId === 'homestead' && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void handleStudy()}
-                      className="rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] text-neutral-200 hover:bg-white/10 disabled:opacity-45 cursor-pointer"
-                    >
-                      Send {selectedAgent.name} to Study Ruins
-                    </button>
-                  )}
+                  <span className="text-[10px] font-mono text-neutral-400">
+                    {gate.discovered ? 'Complete' : 'In Progress'}
+                  </span>
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {RUNES.map((r) => {
                     const solved = gate.clues[r.key];
                     return (
                       <div
                         key={r.key}
-                        className={`rounded-xl border p-3 ${
-                          solved
-                            ? 'border-white/15 bg-white/[0.04]'
-                            : 'border-white/10 bg-neutral-900/70'
+                        className={`rounded-xl border px-3 py-2 flex items-center justify-between gap-3 ${
+                          solved ? 'border-white/15 bg-white/[0.04]' : 'border-white/10 bg-neutral-900/60'
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-medium text-white">{r.title}</span>
-                          {solved ? (
-                            <span className="inline-flex items-center gap-1 text-[11px] text-neutral-200">
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              Solved
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-mono text-neutral-500">Locked</span>
-                          )}
-                        </div>
-                        <p className="mt-1 text-[11px] text-neutral-400">{r.riddle}</p>
-                        {!solved && (
-                          <div className="mt-2 flex flex-wrap gap-1.5">
-                            {r.options.map((opt) => (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                disabled={busy}
-                                onClick={() => void handleGuess(r.key, opt.id)}
-                                className="rounded-lg border border-white/10 bg-neutral-950 px-2.5 py-1 text-[11px] text-neutral-200 transition hover:border-white/30 hover:bg-white hover:text-neutral-950 disabled:opacity-45 cursor-pointer"
-                              >
-                                {opt.label}
-                              </button>
-                            ))}
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium text-white">{r.title}</div>
+                          <div className="text-[10px] text-neutral-400 truncate">
+                            {solved ? r.discoveryText : 'NPC will inspect ruins at (10, 11, 15) to decipher'}
                           </div>
+                        </div>
+                        {solved ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] text-neutral-200 shrink-0">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Deciphered
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-mono text-neutral-500 shrink-0">Pending</span>
                         )}
                       </div>
                     );
@@ -253,13 +276,13 @@ export const GateModal: React.FC<GateModalProps> = ({
                 </div>
               </div>
 
-              {/* Step 2: Assemble 7-block Gate */}
-              <div className={`space-y-2.5 pt-2 border-t border-white/10 ${gate.discovered ? '' : 'opacity-50'}`}>
+              {/* Step 2: Autonomous Construction Progress */}
+              <div className="space-y-2 pt-2 border-t border-white/10">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
                     <Hammer className="h-3.5 w-3.5 text-neutral-300" />
                     <span className="text-xs font-medium text-white">
-                      Step 2 · Assemble the Gate Arch ({gate.built_count}/{gate.total_count})
+                      Phase 2 · Gate Arch Construction ({gate.built_count}/{gate.total_count})
                     </span>
                   </div>
                   <span className="font-mono text-[11px] text-neutral-400">{gate.progress}%</span>
@@ -289,30 +312,50 @@ export const GateModal: React.FC<GateModalProps> = ({
                     );
                   })}
                 </div>
-
-                {gate.discovered && worldId === 'homestead' && (
-                  <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void handleBuild('npc')}
-                      className="rounded-xl border border-white/15 bg-neutral-900 px-3.5 py-2 text-xs text-neutral-200 hover:bg-neutral-800 disabled:opacity-45 cursor-pointer"
-                    >
-                      Gather & Build with {selectedAgent.name}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void handleBuild('place')}
-                      className="rounded-xl bg-white px-4 py-2 text-xs font-semibold text-neutral-950 hover:bg-neutral-200 disabled:opacity-45 cursor-pointer"
-                    >
-                      {gate.next_material
-                        ? `Assemble Next (${gate.next_material.replace(/_/g, ' ')})`
-                        : 'Assemble Gate Block'}
-                    </button>
-                  </div>
-                )}
               </div>
+
+              {/* Optional Manual / God Override */}
+              {worldId === 'homestead' && (
+                <details className="pt-2 border-t border-white/10 text-[11px] text-neutral-400">
+                  <summary className="cursor-pointer hover:text-neutral-200 select-none">
+                    Optional · Solve Runes or Place Blocks Manually
+                  </summary>
+                  <div className="mt-2.5 space-y-2">
+                    {RUNES.filter((r) => !gate.clues[r.key]).map((r) => (
+                      <div key={r.key} className="rounded-xl border border-white/10 bg-neutral-900/60 p-2.5">
+                        <div className="text-[11px] text-neutral-300 mb-1.5">{r.riddle}</div>
+                        <div className="flex flex-wrap gap-1">
+                          {r.options.map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleGuess(r.key, opt.id)}
+                              className="rounded-lg border border-white/10 bg-neutral-950 px-2 py-1 text-[10px] text-neutral-200 hover:bg-white hover:text-neutral-950 cursor-pointer"
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {gate.discovered && (
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleBuild('place')}
+                          className="rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-[11px] text-white hover:bg-white hover:text-neutral-950 cursor-pointer"
+                        >
+                          {gate.next_material
+                            ? `Place From Bag (${gate.next_material.replace(/_/g, ' ')})`
+                            : 'Assemble Gate Block'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              )}
             </>
           )}
         </div>

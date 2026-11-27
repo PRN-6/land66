@@ -610,6 +610,48 @@ class NpcAgent:
             return True
         return False
 
+    def choose_gate_progression(self) -> bool:
+        sim = self.sim
+        if sim.world_id != "homestead" or sim.gate_unlocked:
+            return False
+        if not sim.gate_discovered:
+            return self.choose(
+                "study_gate",
+                "I noticed glowing runes carved into the West Clearing stone plinth. I'll examine and decipher them myself!",
+                "Decipher Sky Teleport Gate runes",
+            )
+        nxt = sim.next_gate_block()
+        if not nxt:
+            return False
+        inv = self.inventory
+        if inv.get(nxt.material, 0) >= nxt.amount:
+            return self.choose(
+                "build_gate",
+                f"Fitting {nxt.surface_material.replace('_', ' ')} into the Sky Teleport Gate arch.",
+                "Build Sky Teleport Gate",
+            )
+        if nxt.material == "sunstone":
+            if inv.get("crystal", 0) >= 1 and inv.get("gold_ore", 0) >= 1:
+                return self.choose(
+                    "craft",
+                    "I solved the keystone schematic—fusing Crystal and Gold Ore into a radiant Sunstone core!",
+                    "Craft Sunstone keystone",
+                    recipe="sunstone",
+                )
+            need_res = "gold_ore" if inv.get("gold_ore", 0) < 1 else "crystal"
+            return self.choose(
+                "gather",
+                f"Gathering {need_res.replace('_', ' ')} from island outcrops to craft the Sunstone keystone.",
+                f"Gather {need_res.replace('_', ' ')}",
+                resource=need_res,
+            )
+        return self.choose(
+            "gather",
+            f"Mining {nxt.material.replace('_', ' ')} from island veins for the Sky Teleport Gate.",
+            f"Gather {nxt.material.replace('_', ' ')}",
+            resource=nxt.material,
+        )
+
     def choose_fallback(self):
         n, inv = self.needs, self.inventory
         sim = self.sim
@@ -665,6 +707,8 @@ class NpcAgent:
 
         # Secondary role specializations
         if self.role == "explorer":
+            if self.choose_gate_progression():
+                return
             if self.choose("explore", "Mapping out the edges of our sky island and checking on neighbors.", "Explore the island"):
                 return
         elif self.role == "farmer":
@@ -701,6 +745,8 @@ class NpcAgent:
         if not self.explored and self.choose("explore", "I will check the clearing and the pond before choosing where to settle.", "Explore the island"):
             return
         if inv["berries"] < 6 and self.choose("forage", "A few berries in my pocket will make building less precarious.", "Stock a little food"):
+            return
+        if self.choose_gate_progression():
             return
         b = sim.next_build()
         if b:
@@ -1454,6 +1500,10 @@ class Simulation:
                         ag.start_action("attack", {"target_id": prey.id})
                     else:
                         ag.thought = f"I heard a whisper: {value[:200]}. I will think about it while caring for myself."
+                elif any(w in low for w in ("gate", "portal", "rune", "market")) and ag.sim.world_id == "homestead" and not ag.sim.gate_unlocked:
+                    ag.job = None
+                    if not ag.choose_gate_progression():
+                        ag.thought = "Heading over to work on the Sky Teleport Gate!"
                 else:
                     ag.thought = f"I heard a whisper: {value[:200]}. I will think about it while caring for myself."
         elif action == "heal_npc":

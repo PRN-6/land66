@@ -394,3 +394,16 @@ def test_whisper_named_attacker_and_defense_priority_over_chores():
     assert s.primary.hostile_target is None
     assert rowan.threatened_by == elena.id
     assert rowan.current_action == 'attack'
+
+
+def test_npc_autonomously_solves_and_builds_teleport_gate():
+    s = Simulation(seed=66)
+    assert not s.gate_discovered and not s.gate_unlocked
+    # Zero manual decipher clicks or player item gifts: let NPC run autonomously
+    for _ in range(1200):
+        s.step(1.0)
+        if s.gate_unlocked:
+            break
+    assert s.gate_discovered
+    assert s.gate_unlocked
+    assert s.gate_progress() == 100.0
