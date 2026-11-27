@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SAVES_DIR = Path(__file__).resolve().parent.parent / "saves"
 SAVE_FORMAT = "land66-save-v1"
+AUTOSAVE_FILENAME = "_autosave.json"
 SAFE_SLOT_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 
 
@@ -71,6 +72,8 @@ def list_save_slots() -> list[dict]:
         return []
     entries: list[dict] = []
     for path in SAVES_DIR.glob("*.json"):
+        if path.name.startswith("_"):
+            continue
         try:
             raw = path.read_text(encoding="utf-8")
             payload = json.loads(raw)
@@ -118,3 +121,25 @@ def delete_save_slot(slot_name: str) -> str:
         raise FileNotFoundError(f"Save slot '{slot_name}' not found")
     path.unlink()
     return path.stem
+
+
+def write_runtime_autosave(payload: dict) -> None:
+    """Atomically persist the multi-world live session bundle across server restarts."""
+    SAVES_DIR.mkdir(parents=True, exist_ok=True)
+    path = SAVES_DIR / AUTOSAVE_FILENAME
+    serialized = json.dumps(payload, separators=(",", ":"))
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(serialized, encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def read_runtime_autosave() -> dict | None:
+    """Load the automatic session bundle if present and valid."""
+    path = SAVES_DIR / AUTOSAVE_FILENAME
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None

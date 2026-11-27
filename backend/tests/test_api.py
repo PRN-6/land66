@@ -377,3 +377,32 @@ def test_god_directly_create_switch_and_delete_world():
 
             # Invalid preset rejected cleanly
             assert client.post('/api/world/create', json={'preset': 'underwater_void'}).status_code == 422
+
+
+def test_runtime_autosave_persists_across_restart(tmp_path, monkeypatch):
+    import app.save_store as save_store
+    monkeypatch.setattr(save_store, 'SAVES_DIR', tmp_path / 'saves')
+
+    # Session 1: modify world, create custom realm, add NPC, and close cleanly
+    with TestClient(create_app(seed=66, brain=Brain(LLMConfig()), persist=True)) as client:
+        client.post('/api/sim/control', json={'action': 'pause'})
+        client.post('/api/sim/control', json={'action': 'step'})
+        client.post('/api/god/intervene', json={'action': 'spawn_object', 'value': {'object': 'marble', 'x': 15, 'y': 11, 'z': 15}})
+        created = client.post('/api/world/create', json={'name': 'Alpine Keep', 'preset': 'alpine_peaks', 'seed': 432, 'starter_name': 'Soren', 'switch': True})
+        assert created.status_code == 200
+        assert client.post('/api/agents', json={'name': 'Mira', 'role': 'builder'}).status_code == 200
+
+    # _autosave.json must not pollute named save slots
+    assert save_store.list_save_slots() == []
+
+    # Session 2: boot brand-new app with persist=True -> resumes active realm, NPCs, & homestead changes
+    with TestClient(create_app(seed=66, brain=Brain(LLMConfig()), persist=True)) as client2:
+        st = client2.get('/api/state').json()
+        assert st['world_id'] == 'alpine-keep'
+        assert st['world_name'] == 'Alpine Keep'
+        assert {a['name'] for a in st['agents']} == {'Soren', 'Mira'}
+        assert len(st['worlds']) == 3
+
+        sw = client2.post('/api/world/switch', json={'world': 'homestead'})
+        assert sw.status_code == 200
+        assert sw.json()['state']['tick'] >= 1

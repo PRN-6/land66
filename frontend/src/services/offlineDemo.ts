@@ -244,7 +244,7 @@ export class OfflineDemoSimulator {
   private agentCounter = 1;
   private traceCounter = 0;
 
-  constructor(seed = 6601) {
+  constructor(seed = 6601, restoreAutosave = true) {
     this.activeWorldId = 'homestead';
     this.activeWorldName = 'Homestead';
     this.activePreset = 'homestead';
@@ -254,6 +254,9 @@ export class OfflineDemoSimulator {
     ];
     this.state = this.createInitialState(seed, 'homestead', 250, 'Homestead', 'homestead');
     this.generateIsland(seed);
+    if (restoreAutosave) {
+      this.restoreAutosave();
+    }
   }
 
   private createInitialState(
@@ -628,6 +631,7 @@ export class OfflineDemoSimulator {
     } else {
       this.generatePresetIsland(this.activePreset, seed);
     }
+    this.saveAutosave();
     return this.getInitMessage();
   }
 
@@ -710,6 +714,7 @@ export class OfflineDemoSimulator {
     this.cacheCurrentWorld();
 
     if (enter) {
+      this.saveAutosave();
       return this.getInitMessage();
     }
 
@@ -744,6 +749,7 @@ export class OfflineDemoSimulator {
     if (this.activeWorldId === wid) {
       return this.switchWorld('homestead');
     }
+    this.saveAutosave();
     return null;
   }
 
@@ -797,6 +803,7 @@ export class OfflineDemoSimulator {
     this.state.coins = prevCoins;
     this.state.npc.inventory = prevInv;
     this.state.npc.needs = prevNeeds;
+    this.saveAutosave();
     return this.getInitMessage();
   }
 
@@ -1554,6 +1561,9 @@ export class OfflineDemoSimulator {
     }
 
     this.updatePerception();
+    if (this.state.tick % 15 === 0) {
+      this.saveAutosave();
+    }
     return { blockUpdates, state: this.getState(), trace };
   }
 
@@ -1948,6 +1958,7 @@ export class OfflineDemoSimulator {
     if (action === 'reset') {
       return this.reset(seed ?? Math.floor(Math.random() * 9000) + 1000);
     }
+    this.saveAutosave();
     return null;
   }
 
@@ -2125,6 +2136,7 @@ export class OfflineDemoSimulator {
     } else if (action === 'clear_entities') {
       this.demoEntities = [];
     }
+    this.saveAutosave();
     return updates;
   }
 
@@ -2147,6 +2159,8 @@ export class OfflineDemoSimulator {
       tools: { axe: 0, pickaxe: 0, hammer: 0 },
       current_goal: a.current_goal,
       thought: a.thought,
+      hostile_target: a.hostile_target ?? null,
+      threatened_by: a.threatened_by ?? null,
       memories: [...a.memories],
       journal: [...a.journal],
       explored: true,
@@ -2327,6 +2341,8 @@ export class OfflineDemoSimulator {
         yaw: Number(src.yaw ?? base.yaw),
         current_goal: String(src.current_goal ?? base.current_goal),
         thought: String(src.thought ?? base.thought),
+        hostile_target: (src.hostile_target as string | null | undefined) ?? null,
+        threatened_by: (src.threatened_by as string | null | undefined) ?? null,
         needs: { ...base.needs, ...((src.needs as Record<string, number>) ?? {}) },
         inventory: { ...base.inventory, ...((src.inventory as Record<string, number>) ?? {}) },
         memories: Array.isArray(src.memories) ? (src.memories as NpcState['memories']) : base.memories,
@@ -2369,12 +2385,170 @@ export class OfflineDemoSimulator {
       });
     }
     this.entityCounter = Math.max(this.demoEntities.length, Number(payload.entity_counter ?? this.demoEntities.length));
+    if (this.waypoints.length === 0) {
+      this.waypoints = [
+        { x: 16, z: 18, action: 'exploring', goal: `Explore ${rawWorldName}`, thought: `Continuing life inside ${rawWorldName}.` },
+        { x: 19, z: 15, action: 'thinking', goal: 'Observe surroundings', thought: 'Everything feels peaceful here.' },
+      ];
+    }
 
     return this.getInitMessage();
+  }
+
+  public saveAutosave(): void {
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return;
+      this.cacheCurrentWorld();
+      const serializedWorlds: Record<string, WorldSavePayload> = {};
+      const snapshotNow = this.activeWorldId;
+      for (const [wid, cached] of Object.entries(this.cachedWorlds)) {
+        if (!cached) continue;
+        // Temporarily project cached world fields to build consistent save payloads
+        const DAY_SECONDS = 360.0;
+        const st = cached.state;
+        const elapsed = ((st.day - 1) + st.time_of_day) * DAY_SECONDS;
+        const primary: NpcState = { ...st.npc, id: 'aiden', role: st.npc.role ?? 'pioneer', variant: st.npc.variant ?? 0 };
+        const agents: NpcState[] = [
+          primary,
+          ...cached.extraAgents.map(({ target: _t, wait: _w, llmConfig: _cfg, ...rest }) => rest),
+        ];
+        serializedWorlds[wid] = {
+          format: 'land66-save-v1',
+          save_version: 1,
+          world_id: wid,
+          world_name: cached.name,
+          biome: cached.preset,
+          coins: st.coins ?? 250,
+          gate_clues: { ...this.gateClues },
+          saved_at: new Date().toISOString(),
+          seed: st.seed,
+          tick: st.tick,
+          elapsed: Number(elapsed.toFixed(4)),
+          paused: st.paused,
+          speed: st.speed,
+          weather: st.weather,
+          weather_override: false,
+          blocks_placed: st.stats.blocks_placed,
+          blocks_broken: st.stats.blocks_broken,
+          entity_counter: cached.entityCounter,
+          agent_counter: cached.agentCounter,
+          world: {
+            seed: st.seed,
+            width: WORLD_WIDTH,
+            height: WORLD_HEIGHT,
+            depth: WORLD_DEPTH,
+            blocks: Array.from(cached.blocks),
+            meta: Array.from(cached.blockMeta),
+            materials: Object.fromEntries(
+              cached.blockMaterials
+                .map((m, i) => (m ? [String(i), m] : null))
+                .filter((e): e is [string, string] => e !== null),
+            ),
+          },
+          entities: cached.entities.map((e) => ({ ...e })),
+          agents: agents.map((a, idx) => ({
+            id: a.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`),
+            name: a.name,
+            role: a.role ?? 'pioneer',
+            variant: a.variant ?? idx,
+            position: [a.position.x, a.position.y, a.position.z],
+            grid_pos: [a.grid_pos.x, a.grid_pos.y, a.grid_pos.z],
+            yaw: a.yaw,
+            needs: { ...a.needs },
+            inventory: { ...a.inventory },
+            current_goal: a.current_goal,
+            thought: a.thought,
+            hostile_target: a.hostile_target ?? null,
+            threatened_by: a.threatened_by ?? null,
+            memories: [...a.memories],
+            journal: [...a.journal],
+          })),
+          brains: {},
+        };
+      }
+      const bundle = {
+        format: 'land66-offline-autosave-v1',
+        activeWorldId: snapshotNow,
+        worldRegistry: this.worldRegistry,
+        gateClues: this.gateClues,
+        worlds: serializedWorlds,
+      };
+      window.localStorage.setItem(OFFLINE_AUTOSAVE_KEY, JSON.stringify(bundle));
+    } catch {
+      // Ignore storage quota or disabled storage errors cleanly
+    }
+  }
+
+  public restoreAutosave(): boolean {
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return false;
+      const raw = window.localStorage.getItem(OFFLINE_AUTOSAVE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw) as {
+        format?: string;
+        activeWorldId?: string;
+        worldRegistry?: Array<{ id: string; name: string; preset: string; seed: number; builtin: boolean }>;
+        gateClues?: { anchor?: boolean; conduit?: boolean; core?: boolean };
+        worlds?: Record<string, WorldSavePayload>;
+      };
+      if (parsed?.format !== 'land66-offline-autosave-v1' || !parsed.worlds || typeof parsed.worlds !== 'object') {
+        return false;
+      }
+      const worldEntries = Object.entries(parsed.worlds);
+      if (worldEntries.length === 0) return false;
+
+      if (Array.isArray(parsed.worldRegistry) && parsed.worldRegistry.length > 0) {
+        this.worldRegistry = parsed.worldRegistry;
+      }
+      const savedClues = parsed.gateClues
+        ? {
+            anchor: Boolean(parsed.gateClues.anchor),
+            conduit: Boolean(parsed.gateClues.conduit),
+            core: Boolean(parsed.gateClues.core),
+          }
+        : undefined;
+
+      this.cachedWorlds = {};
+      for (const [wid, wPayload] of worldEntries) {
+        if (!wPayload?.world?.blocks) continue;
+        this.loadSave(wPayload);
+        if (wid === 'homestead' && savedClues) {
+          this.gateClues = { ...savedClues };
+        }
+        this.cacheCurrentWorld();
+      }
+      if (savedClues) {
+        this.gateClues = savedClues;
+      }
+
+      const targetId =
+        parsed.activeWorldId && this.cachedWorlds[parsed.activeWorldId]
+          ? parsed.activeWorldId
+          : 'homestead';
+      const targetCached = this.cachedWorlds[targetId];
+      if (!targetCached) return false;
+      this.activeWorldId = targetId;
+      this.activeWorldName = targetCached.name;
+      this.activePreset = targetCached.preset;
+      this.blocks = new Uint8Array(targetCached.blocks);
+      this.blockMeta = new Uint8Array(targetCached.blockMeta);
+      this.blockMaterials = [...targetCached.blockMaterials];
+      this.surfaceY = new Int8Array(targetCached.surfaceY);
+      this.state = structuredClone(targetCached.state);
+      this.demoEntities = structuredClone(targetCached.entities);
+      this.extraAgents = structuredClone(targetCached.extraAgents);
+      this.waypoints = structuredClone(targetCached.waypoints);
+      this.entityCounter = targetCached.entityCounter;
+      this.agentCounter = targetCached.agentCounter;
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
 const OFFLINE_SAVES_KEY = 'land66_offline_saves_v1';
+const OFFLINE_AUTOSAVE_KEY = 'land66_offline_autosave_v1';
 
 interface StoredOfflineSave {
   summary: SaveSlotSummary;

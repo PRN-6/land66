@@ -318,7 +318,17 @@ export function App() {
         setTraces((prev) => [res.trace!, ...prev].slice(0, 50));
       }
     }, 150);
-    return () => window.clearInterval(interval);
+    const flushDemoSave = () => {
+      demoSim.saveAutosave();
+    };
+    window.addEventListener('pagehide', flushDemoSave);
+    window.addEventListener('beforeunload', flushDemoSave);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('pagehide', flushDemoSave);
+      window.removeEventListener('beforeunload', flushDemoSave);
+      demoSim.saveAutosave();
+    };
   }, [connectionMode]);
 
   const handleControl = useCallback(

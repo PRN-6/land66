@@ -26,7 +26,8 @@ logger = logging.getLogger("land66")
 
 
 class Runtime:
-    def __init__(self, seed=66, brain: Brain | None = None):
+    def __init__(self, seed=66, brain: Brain | None = None, persist: bool = False):
+        self.persist = persist
         self.worlds: dict[str, Simulation] = {
             "homestead": Simulation(seed, biome="homestead", world_id="homestead", world_name="Homestead"),
             "market": Simulation(seed + 100, biome="market", world_id="market", world_name="Market"),
@@ -44,6 +45,7 @@ class Runtime:
             "homestead": {"aiden": 0},
             "market": {"aiden": 0},
         }
+        self._last_autosave_tick = 0
 
     @property
     def sim(self) -> Simulation:
@@ -166,6 +168,88 @@ class Runtime:
                 self.sim.agents[aid].queued_decision = None
         self.sync_status()
 
+    def export_runtime_bundle(self) -> dict:
+        return {
+            "format": "land66-runtime-autosave-v1",
+            "active_world_id": self.active_world_id,
+            "worlds": {wid: sim.export_save() for wid, sim in self.worlds.items()},
+            "brains_by_world": {
+                wid: {aid: b.config.public() for aid, b in bmap.items()}
+                for wid, bmap in self.brains_by_world.items()
+            },
+        }
+
+    def load_runtime_bundle(self, bundle: dict) -> bool:
+        raw_worlds = bundle.get("worlds")
+        if not isinstance(raw_worlds, dict) or not raw_worlds:
+            return False
+        restored_worlds: dict[str, Simulation] = {}
+        restored_brains: dict[str, dict[str, Brain]] = {}
+        restored_ticks: dict[str, dict[str, int]] = {}
+        raw_brains = bundle.get("brains_by_world") if isinstance(bundle.get("brains_by_world"), dict) else {}
+
+        for wid, wdata in raw_worlds.items():
+            if not isinstance(wdata, dict):
+                continue
+            try:
+                r_sim = Simulation.from_save(wdata)
+            except Exception:
+                continue
+            restored_worlds[wid] = r_sim
+            saved_wbrains = raw_brains.get(wid) if isinstance(raw_brains.get(wid), dict) else {}
+            wbrains: dict[str, Brain] = {}
+            wticks: dict[str, int] = {}
+            for aid in r_sim.agents:
+                b = Brain(timeout=self.default_timeout)
+                cfg = saved_wbrains.get(aid)
+                if isinstance(cfg, dict):
+                    patch = {
+                        k: cfg[k]
+                        for k in ("provider", "model", "base_url", "temperature", "decision_interval_ticks", "enabled")
+                        if k in cfg and cfg[k] is not None
+                    }
+                    try:
+                        b.configure(patch)
+                    except Exception:
+                        pass
+                wbrains[aid] = b
+                wticks[aid] = r_sim.tick
+            restored_brains[wid] = wbrains
+            restored_ticks[wid] = wticks
+
+        if "homestead" not in restored_worlds:
+            return False
+        self.worlds = restored_worlds
+        self.brains_by_world = restored_brains
+        self.next_ticks_by_world = restored_ticks
+        raw_active = str(bundle.get("active_world_id", "homestead"))
+        self.active_world_id = raw_active if raw_active in self.worlds else "homestead"
+        self.sync_status()
+        self._last_autosave_tick = self.sim.tick
+        return True
+
+    def save_autosave(self) -> None:
+        if not self.persist:
+            return
+        try:
+            from .save_store import write_runtime_autosave
+            write_runtime_autosave(self.export_runtime_bundle())
+            self._last_autosave_tick = self.sim.tick
+        except Exception:
+            logger.exception("Failed to write runtime autosave")
+
+    def restore_autosave(self) -> bool:
+        if not self.persist:
+            return False
+        try:
+            from .save_store import read_runtime_autosave
+            data = read_runtime_autosave()
+            if data and self.load_runtime_bundle(data):
+                return True
+        except Exception:
+            logger.exception("Failed to restore runtime autosave; starting fresh")
+        return False
+
     async def reset(self, seed):
         await self.cancel_thinking()
         primary_brain = self.brains.get("aiden") or Brain(timeout=self.default_timeout)
@@ -177,6 +261,7 @@ class Runtime:
         self.brains = {"aiden": primary_brain}
         self.next_think_ticks = {"aiden": 0}
         self.sync_status()
+        self.save_autosave()
         self.publish(self.world_init_payload())
 
     async def create_world(
@@ -231,6 +316,7 @@ class Runtime:
             self.broadcast_tick()
 
         summary = next(w for w in self.worlds_summary() if w["id"] == world_id)
+        self.save_autosave()
         return summary, self.snapshot()
 
     async def delete_world(self, world_id: str) -> dict:
@@ -251,6 +337,7 @@ class Runtime:
             self.publish(self.world_init_payload())
         else:
             self.broadcast_tick()
+        self.save_autosave()
         return self.snapshot()
 
     async def switch_world(self, target_world: str) -> dict:
@@ -273,6 +360,7 @@ class Runtime:
                 dst_brains[aid] = Brain(timeout=self.default_timeout)
         self.next_think_ticks = {aid: dst.tick for aid in dst.agents}
         self.sync_status()
+        self.save_autosave()
         self.publish(self.world_init_payload())
         return self.snapshot()
 
@@ -319,6 +407,7 @@ class Runtime:
         self.brains = new_brains
         self.next_think_ticks = new_ticks
         self.sync_status()
+        self.save_autosave()
         self.publish(self.world_init_payload())
         return self.snapshot()
 
@@ -371,6 +460,8 @@ class Runtime:
                             self.thinking_tasks[aid] = asyncio.create_task(b.decide(snap, agent_id=aid))
                             self.next_think_ticks[aid] = self.sim.tick + b.config.decision_interval_ticks
                     self.broadcast_tick()
+                    if self.persist and self.sim.tick - self._last_autosave_tick >= 25:
+                        self.save_autosave()
             except Exception:
                 logger.exception("Simulation tick failed; pausing for inspection")
                 self.sim.paused = True
@@ -384,12 +475,16 @@ class Runtime:
             with contextlib.suppress(asyncio.CancelledError):
                 await self.loop_task
         await self.cancel_thinking()
+        self.save_autosave()
 
 
-def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
+def create_app(seed: int | None = None, brain: Brain | None = None, persist: bool | None = None) -> FastAPI:
+    use_persist = ("PYTEST_CURRENT_TEST" not in os.environ) if persist is None else bool(persist)
+
     @asynccontextmanager
     async def lifespan(app):
-        runtime = Runtime(seed if seed is not None else int(os.getenv("LAND66_SEED", "66")), brain)
+        runtime = Runtime(seed if seed is not None else int(os.getenv("LAND66_SEED", "66")), brain, persist=use_persist)
+        runtime.restore_autosave()
         app.state.runtime = runtime
         runtime.loop_task = asyncio.create_task(runtime.run())
         try:
@@ -543,6 +638,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
         elif command.action == "reset":
             await rt.reset(command.seed if command.seed is not None else rt.sim.seed)
             return rt.snapshot()
+        rt.save_autosave()
         rt.broadcast_tick()
         return rt.snapshot()
 
@@ -814,6 +910,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None) -> FastAPI:
             rt.sim.intervene(command.action, command.value, agent_id=command.agent_id)
         except (ValueError, TypeError) as exc:
             raise HTTPException(422, str(exc) or "Invalid intervention value or unavailable target")
+        rt.save_autosave()
         rt.broadcast_tick()
         return rt.snapshot()
 
