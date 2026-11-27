@@ -304,7 +304,7 @@ export function GodDock({
                       <Brain className="w-3 h-3" />
                       Brain
                     </button>
-                    {aid !== 'aiden' && (
+                    {idx > 0 && (
                       <button
                         onClick={() => onDeleteAgent(aid)}
                         title={`Remove ${ag.name}`}

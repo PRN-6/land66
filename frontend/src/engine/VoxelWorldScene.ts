@@ -343,6 +343,14 @@ export class VoxelWorldScene {
       this.blockMaterials[i] = msg.block_materials?.[i] ?? '';
     }
     this.needsRebuild = true;
+    const validIds = new Set(
+      (msg.state.agents && msg.state.agents.length > 0 ? msg.state.agents : [msg.state.npc]).map(
+        (a, i) => a.id ?? (i === 0 ? 'aiden' : `npc-${i + 1}`),
+      ),
+    );
+    if (!validIds.has(this.selectedAgentId)) {
+      this.selectedAgentId = msg.state.npc?.id ?? msg.state.agents?.[0]?.id ?? 'aiden';
+    }
     this.applyState(msg.state, true);
   }
 

@@ -159,7 +159,7 @@ export function InspectorDrawer({
               <Brain className="w-3 h-3" />
               <span>Brain</span>
             </button>
-            {activeId !== 'aiden' && (
+            {activeId !== (agents[0]?.id ?? state.npc.id ?? 'aiden') && (
               <button
                 onClick={() => onDeleteAgent(activeId)}
                 title={`Remove ${npc.name}`}

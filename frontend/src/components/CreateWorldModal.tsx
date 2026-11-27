@@ -252,7 +252,7 @@ export function CreateWorldModal({
                 type="text"
                 value={starterName}
                 onChange={(e) => setStarterName(e.target.value)}
-                placeholder="Name (default Aiden)"
+                placeholder="Name (e.g. Lyra, Soren, Kaori...)"
                 maxLength={32}
                 className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-neutral-950 border border-white/10 text-xs text-white placeholder:text-neutral-500 focus:outline-none focus:border-white/30"
               />

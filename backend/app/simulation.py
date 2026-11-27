@@ -420,7 +420,7 @@ class NpcAgent:
         candidates, reach, avoid = None, 1, False
         if action in {"walk", "explore"}:
             if action == "explore":
-                if self.id == "aiden":
+                if self.id == self.sim.primary_id and self.sim.biome == "homestead":
                     target = w.feet_at(20, 19)
                 else:
                     rx = self.sim.rng.randint(6, 26)
@@ -868,7 +868,7 @@ class NpcAgent:
                         self.threatened_by = None
                         defender.hostile_target = None
                         defender.threatened_by = None
-                        if defender.id != "aiden":
+                        if defender.id != sim.primary_id:
                             sim.agents.pop(defender.id, None)
                             for peer in sim.agents.values():
                                 if peer.hostile_target == defender.id:
@@ -1052,19 +1052,31 @@ class Simulation:
         self.agent_counter = 1
         self.home = HomeState()
         start = (16, 11, 22) if self.biome == "market" else (self.world.feet_at(16, 20) or (16, 11, 20))
+        resident_map = {
+            "market": ("lyra", "Lyra", "explorer", 2),
+            "alpine_peaks": ("torin", "Torin", "explorer", 1),
+            "sakura_grove": ("kaori", "Kaori", "forager", 2),
+            "crystal_canyon": ("cyrus", "Cyrus", "builder", 3),
+            "obsidian_caldera": ("ember", "Ember", "builder", 4),
+            "flat_sandbox": ("rowan", "Rowan", "pioneer", 1),
+        }
+        if self.world_id == "homestead":
+            rid, rname, rrole, rvar = "aiden", "Aiden", "pioneer", 0
+        else:
+            rid, rname, rrole, rvar = resident_map.get(self.biome, ("sol", "Sol", "pioneer", 1))
         self.agents: dict[str, NpcAgent] = {
-            "aiden": NpcAgent(self, "aiden", "Aiden", role="pioneer", variant=0, start_pos=start),
+            rid: NpcAgent(self, rid, rname, role=rrole, variant=rvar, start_pos=start),
         }
         if self.biome == "market":
-            self.primary.current_goal = "Browse the floating bazaar stalls and trade goods"
-            self.primary.thought = "Welcome to the Sky Market! I can buy marble, gems, tools, and adopt pets here."
-            self.primary.remember("Arrived at the floating Sky Market plaza.")
+            self.primary.current_goal = "Tend the Sky Market stalls and greet traders"
+            self.primary.thought = f"I am {self.primary.name}, steward of the Sky Market! Everything runs smoothly here."
+            self.primary.remember("Opened the floating Sky Market plaza for trade.")
             self._seed_market_merchants()
         elif self.world_id != "homestead":
             preset_label = WORLD_PRESETS[self.biome]["label"]
             self.primary.current_goal = f"Explore {self.world_name} and gather resources"
-            self.primary.thought = f"I arrived in {self.world_name} ({preset_label}). Time to survey this new world!"
-            self.primary.remember(f"Awakened inside God-created world '{self.world_name}' ({preset_label}).")
+            self.primary.thought = f"I live in {self.world_name} ({preset_label}). Time to explore my own island!"
+            self.primary.remember(f"Awakened as an independent resident of '{self.world_name}' ({preset_label}).")
 
     def _seed_market_merchants(self) -> None:
         stalls = [
@@ -1092,8 +1104,14 @@ class Simulation:
             })
 
     @property
+    def primary_id(self) -> str:
+        if "aiden" in self.agents:
+            return "aiden"
+        return next(iter(self.agents.keys()))
+
+    @property
     def primary(self) -> NpcAgent:
-        return self.agents["aiden"]
+        return self.agents[self.primary_id]
 
     @property
     def household(self) -> Household:
@@ -1332,8 +1350,8 @@ class Simulation:
         return agent
 
     def remove_agent(self, agent_id: str) -> None:
-        if agent_id == "aiden":
-            raise ValueError("Cannot remove primary islander Aiden")
+        if agent_id == self.primary_id:
+            raise ValueError(f"Cannot remove primary islander {self.primary.name}")
         if agent_id not in self.agents:
             raise ValueError("Unknown agent_id")
         removed = self.agents.pop(agent_id)
@@ -1823,7 +1841,7 @@ class Simulation:
                 continue
             agent = NpcAgent.from_save(sim, agent_data)
             sim.agents[agent.id] = agent
-        if "aiden" not in sim.agents:
-            raise ValueError("Invalid save file: primary islander 'aiden' missing")
+        if not sim.agents:
+            raise ValueError("Invalid save file: at least one NPC agent is required")
         sim.agent_counter = max(sim.agent_counter, len(sim.agents))
         return sim

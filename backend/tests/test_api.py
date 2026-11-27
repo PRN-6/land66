@@ -256,7 +256,10 @@ def test_switch_to_market_world_and_buy_sell():
             assert sw.status_code == 200
             init_market = next_type(ws, 'world_init')
             assert init_market['state']['world_id'] == 'market'
-            assert init_market['state']['npc']['inventory']['berries'] == 5
+            # Aiden remains independently on Homestead; Market has its own local steward Lyra
+            assert init_market['state']['npc']['id'] == 'lyra'
+            assert init_market['state']['npc']['name'] == 'Lyra'
+            assert init_market['state']['npc']['inventory']['berries'] == 0
 
             cat = client.get('/api/market/catalog').json()
             assert cat['coins'] == 250 and len(cat['shop_items']) >= 15
@@ -270,17 +273,18 @@ def test_switch_to_market_world_and_buy_sell():
             assert buy_cat.status_code == 200
             assert buy_cat.json()['coins'] == 154
 
-            sell = client.post('/api/market/sell', json={'item': 'berries', 'quantity': 3})
+            sell = client.post('/api/market/sell', json={'item': 'marble', 'quantity': 2})
             assert sell.status_code == 200
-            assert sell.json()['earned'] == 6 and sell.json()['coins'] == 160
+            assert sell.json()['earned'] == 12 and sell.json()['coins'] == 166
 
-            # Return home: keep bought marble and updated coins
+            # Return home: Aiden stayed on Homestead independently with his own berries intact!
             back = client.post('/api/world/switch', json={'world': 'homestead'})
             assert back.status_code == 200
             init_back = next_type(ws, 'world_init')
             assert init_back['state']['world_id'] == 'homestead'
-            assert init_back['state']['coins'] == 160
-            assert init_back['state']['npc']['inventory']['marble'] == 8
+            assert init_back['state']['coins'] == 166
+            assert init_back['state']['npc']['id'] == 'aiden'
+            assert init_back['state']['npc']['inventory']['berries'] == 5
 
 
 def test_npc_craft_weapon_hunt_and_sell_loot():

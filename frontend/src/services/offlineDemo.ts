@@ -266,6 +266,17 @@ export class OfflineDemoSimulator {
     worldName = 'Homestead',
     worldPreset: string = worldId,
   ): WorldStateSnapshot {
+    const residents: Record<string, { id: string; name: string; role: string; variant: number }> = {
+      market: { id: 'lyra', name: 'Lyra', role: 'explorer', variant: 2 },
+      alpine_peaks: { id: 'torin', name: 'Torin', role: 'explorer', variant: 1 },
+      sakura_grove: { id: 'kaori', name: 'Kaori', role: 'forager', variant: 2 },
+      crystal_canyon: { id: 'cyrus', name: 'Cyrus', role: 'builder', variant: 3 },
+      obsidian_caldera: { id: 'ember', name: 'Ember', role: 'builder', variant: 4 },
+      flat_sandbox: { id: 'rowan', name: 'Rowan', role: 'pioneer', variant: 1 },
+    };
+    const res = worldId === 'homestead'
+      ? { id: 'aiden', name: 'Aiden', role: 'pioneer', variant: 0 }
+      : (residents[worldPreset] ?? { id: 'sol', name: 'Sol', role: 'pioneer', variant: 1 });
     return {
       tick: 0,
       day: 1,
@@ -281,10 +292,10 @@ export class OfflineDemoSimulator {
       world_preset: worldPreset,
       coins,
       npc: {
-        id: 'aiden',
-        name: 'Aiden',
-        role: 'pioneer',
-        variant: 0,
+        id: res.id,
+        name: res.name,
+        role: res.role,
+        variant: res.variant,
         position: { x: 15.5, y: 12, z: 15.5 },
         grid_pos: { x: 15, y: 12, z: 15 },
         yaw: 0.4,
@@ -368,9 +379,9 @@ export class OfflineDemoSimulator {
     this.state.stats.entities_count = this.demoEntities.length;
     const primaryAgent: NpcState = {
       ...this.state.npc,
-      id: 'aiden',
-      role: 'pioneer',
-      variant: 0,
+      id: this.state.npc.id ?? 'aiden',
+      role: this.state.npc.role ?? 'pioneer',
+      variant: this.state.npc.variant ?? 0,
       llm_status: this.state.llm_status,
     };
     const extras: NpcState[] = this.extraAgents.map(
@@ -762,8 +773,6 @@ export class OfflineDemoSimulator {
       throw new Error(`Unknown world "${target}".`);
     }
     const prevCoins = this.state.coins ?? 250;
-    const prevInv = { ...this.state.npc.inventory };
-    const prevNeeds = { ...this.state.npc.needs };
 
     this.cacheCurrentWorld();
 
@@ -801,8 +810,6 @@ export class OfflineDemoSimulator {
     this.state.world_name = targetMeta.name;
     this.state.world_preset = targetMeta.preset;
     this.state.coins = prevCoins;
-    this.state.npc.inventory = prevInv;
-    this.state.npc.needs = prevNeeds;
     this.saveAutosave();
     return this.getInitMessage();
   }
@@ -2355,10 +2362,11 @@ export class OfflineDemoSimulator {
       this.state.npc = restoreNpc(primaryData, this.state.npc);
     }
 
+    const loadedPrimaryId = this.state.npc.id ?? 'aiden';
     this.extraAgents = [];
     for (const a of rawAgents) {
       const aid = String(a.id ?? '');
-      if (!aid || aid === 'aiden') continue;
+      if (!aid || aid === loadedPrimaryId) continue;
       const base = this.addAgent({ name: String(a.name ?? aid), role: (a.role as AgentRole) ?? 'pioneer' });
       const idx = this.extraAgents.length - 1;
       const restored = restoreNpc(a, base);
@@ -2407,7 +2415,7 @@ export class OfflineDemoSimulator {
         const DAY_SECONDS = 360.0;
         const st = cached.state;
         const elapsed = ((st.day - 1) + st.time_of_day) * DAY_SECONDS;
-        const primary: NpcState = { ...st.npc, id: 'aiden', role: st.npc.role ?? 'pioneer', variant: st.npc.variant ?? 0 };
+        const primary: NpcState = { ...st.npc, id: st.npc.id ?? 'aiden', role: st.npc.role ?? 'pioneer', variant: st.npc.variant ?? 0 };
         const agents: NpcState[] = [
           primary,
           ...cached.extraAgents.map(({ target: _t, wait: _w, llmConfig: _cfg, ...rest }) => rest),

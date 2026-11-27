@@ -46,7 +46,7 @@ export function App() {
   }, []);
 
   const [worldState, setWorldState] = useState<WorldStateSnapshot>(() => demoSim.getState());
-  const [selectedAgentId, setSelectedAgentId] = useState('aiden');
+  const [selectedAgentId, setSelectedAgentId] = useState(() => demoSim.getState().npc?.id ?? 'aiden');
   const [traces, setTraces] = useState<LlmTrace[]>([]);
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit');
   const [showThoughtBubble, setShowThoughtBubble] = useState(true);
@@ -144,7 +144,8 @@ export function App() {
 
   const handleDeleteAgent = useCallback(
     async (agentId: string) => {
-      if (agentId === 'aiden') return;
+      const primaryId = worldState.agents?.[0]?.id ?? worldState.npc.id ?? 'aiden';
+      if (agentId === primaryId) return;
       if (connectionModeRef.current === 'live') {
         try {
           await backendApi.deleteAgent(agentId);
@@ -159,14 +160,14 @@ export function App() {
         setWorldState(next);
       }
       if (selectedAgentId === agentId) {
-        setSelectedAgentId('aiden');
-        sceneRef.current?.setSelectedAgent('aiden');
+        setSelectedAgentId(primaryId);
+        sceneRef.current?.setSelectedAgent(primaryId);
       }
       if (llmAgentId === agentId) {
-        setLlmAgentId('aiden');
+        setLlmAgentId(primaryId);
       }
     },
-    [llmAgentId, notifyError, selectedAgentId],
+    [llmAgentId, notifyError, selectedAgentId, worldState.agents, worldState.npc.id],
   );
 
   const handleGodIntervene = useCallback(
@@ -274,11 +275,12 @@ export function App() {
       onOpen: () => setConnMode('live'),
       onMessage: (msg) => {
         if (msg.type === 'world_init') {
+          const primaryId = msg.state.agents?.[0]?.id ?? msg.state.npc?.id ?? 'aiden';
           setConnMode('live');
           sceneRef.current?.applyWorldInit(msg);
           setWorldState(msg.state);
-          setSelectedAgentId('aiden');
-          sceneRef.current?.setSelectedAgent('aiden');
+          setSelectedAgentId(primaryId);
+          sceneRef.current?.setSelectedAgent(primaryId);
         } else if (msg.type === 'tick_update') {
           if (connectionModeRef.current !== 'live') setConnMode('live');
           sceneRef.current?.applyTickUpdate(msg.block_updates, msg.state);
@@ -342,10 +344,11 @@ export function App() {
       } else {
         const resetInit = demoSim.handleControl(action, speed, seed);
         if (resetInit) {
+          const nextPid = resetInit.state.npc?.id ?? 'aiden';
           sceneRef.current?.applyWorldInit(resetInit);
           setWorldState(resetInit.state);
-          setSelectedAgentId('aiden');
-          sceneRef.current?.setSelectedAgent('aiden');
+          setSelectedAgentId(nextPid);
+          sceneRef.current?.setSelectedAgent(nextPid);
         } else {
           const next = demoSim.getState();
           sceneRef.current?.applyTickUpdate([], next);
@@ -423,10 +426,11 @@ export function App() {
       } else {
         const payload = offlineSaveStore.load(slot);
         const init = demoSim.loadSave(payload);
+        const nextPid = init.state.npc?.id ?? 'aiden';
         sceneRef.current?.applyWorldInit(init);
         setWorldState(init.state);
-        setSelectedAgentId('aiden');
-        sceneRef.current?.setSelectedAgent('aiden');
+        setSelectedAgentId(nextPid);
+        sceneRef.current?.setSelectedAgent(nextPid);
       }
       setInspectTarget(null);
       return null;
@@ -484,10 +488,11 @@ export function App() {
         await backendApi.loadSave(parsed);
       } else {
         const init = demoSim.loadSave(parsed);
+        const nextPid = init.state.npc?.id ?? 'aiden';
         sceneRef.current?.applyWorldInit(init);
         setWorldState(init.state);
-        setSelectedAgentId('aiden');
-        sceneRef.current?.setSelectedAgent('aiden');
+        setSelectedAgentId(nextPid);
+        sceneRef.current?.setSelectedAgent(nextPid);
       }
       setInspectTarget(null);
       return null;
@@ -503,10 +508,11 @@ export function App() {
           await backendApi.switchWorld(world);
         } else {
           const init = demoSim.switchWorld(world);
+          const nextPid = init.state.npc?.id ?? 'aiden';
           sceneRef.current?.applyWorldInit(init);
           setWorldState(init.state);
-          setSelectedAgentId('aiden');
-          sceneRef.current?.setSelectedAgent('aiden');
+          setSelectedAgentId(nextPid);
+          sceneRef.current?.setSelectedAgent(nextPid);
         }
         setInspectTarget(null);
       } catch (err) {
@@ -533,10 +539,11 @@ export function App() {
         } else {
           const init = demoSim.createWorld(payload);
           if (init) {
+            const nextPid = init.state.npc?.id ?? 'aiden';
             sceneRef.current?.applyWorldInit(init);
             setWorldState(init.state);
-            setSelectedAgentId('aiden');
-            sceneRef.current?.setSelectedAgent('aiden');
+            setSelectedAgentId(nextPid);
+            sceneRef.current?.setSelectedAgent(nextPid);
           } else {
             const next = demoSim.getState();
             sceneRef.current?.applyTickUpdate([], next);
@@ -561,10 +568,11 @@ export function App() {
         } else {
           const init = demoSim.deleteWorld(worldId);
           if (init) {
+            const nextPid = init.state.npc?.id ?? 'aiden';
             sceneRef.current?.applyWorldInit(init);
             setWorldState(init.state);
-            setSelectedAgentId('aiden');
-            sceneRef.current?.setSelectedAgent('aiden');
+            setSelectedAgentId(nextPid);
+            sceneRef.current?.setSelectedAgent(nextPid);
           } else {
             const next = demoSim.getState();
             sceneRef.current?.applyTickUpdate([], next);

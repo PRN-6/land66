@@ -35,15 +35,15 @@ class Runtime:
         self.active_world_id = "homestead"
         self.default_timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "45"))
         self.brains_by_world: dict[str, dict[str, Brain]] = {
-            "homestead": {"aiden": brain or Brain(timeout=self.default_timeout)},
-            "market": {"aiden": Brain(timeout=self.default_timeout)},
+            wid: {sim.primary_id: (brain if wid == "homestead" and brain else Brain(timeout=self.default_timeout))}
+            for wid, sim in self.worlds.items()
         }
         self.clients: set[asyncio.Queue] = set()
         self.thinking_tasks: dict[str, asyncio.Task] = {}
         self.loop_task: asyncio.Task | None = None
         self.next_ticks_by_world: dict[str, dict[str, int]] = {
-            "homestead": {"aiden": 0},
-            "market": {"aiden": 0},
+            wid: {sim.primary_id: 0}
+            for wid, sim in self.worlds.items()
         }
         self._last_autosave_tick = 0
 
@@ -74,25 +74,27 @@ class Runtime:
 
     @property
     def brain(self) -> Brain:
-        return self.brains["aiden"]
+        pid = self.sim.primary_id
+        return self.brains.setdefault(pid, Brain(timeout=self.default_timeout))
 
     @brain.setter
     def brain(self, b: Brain) -> None:
-        self.brains["aiden"] = b
+        self.brains[self.sim.primary_id] = b
 
     @property
     def thinking_task(self) -> asyncio.Task | None:
-        return self.thinking_tasks.get("aiden")
+        return self.thinking_tasks.get(self.sim.primary_id)
 
     @thinking_task.setter
     def thinking_task(self, task: asyncio.Task | None) -> None:
+        pid = self.sim.primary_id
         if task is None:
-            self.thinking_tasks.pop("aiden", None)
+            self.thinking_tasks.pop(pid, None)
         else:
-            self.thinking_tasks["aiden"] = task
+            self.thinking_tasks[pid] = task
 
     def get_brain(self, agent_id: str | None = None) -> Brain:
-        aid = agent_id or "aiden"
+        aid = agent_id or self.sim.primary_id
         if aid not in self.sim.agents or aid not in self.brains:
             raise HTTPException(404, f"Unknown agent '{aid}'")
         return self.brains[aid]
@@ -252,14 +254,17 @@ class Runtime:
 
     async def reset(self, seed):
         await self.cancel_thinking()
-        primary_brain = self.brains.get("aiden") or Brain(timeout=self.default_timeout)
+        old_pid = self.sim.primary_id
+        primary_brain = self.brains.get(old_pid) or Brain(timeout=self.default_timeout)
         coins = self.sim.coins
         biome = self.sim.biome
         wid = self.sim.world_id
         wname = self.sim.world_name
-        self.worlds[wid] = Simulation(seed, biome=biome, coins=coins, world_id=wid, world_name=wname)
-        self.brains = {"aiden": primary_brain}
-        self.next_think_ticks = {"aiden": 0}
+        new_sim = Simulation(seed, biome=biome, coins=coins, world_id=wid, world_name=wname)
+        self.worlds[wid] = new_sim
+        new_pid = new_sim.primary_id
+        self.brains = {new_pid: primary_brain}
+        self.next_think_ticks = {new_pid: 0}
         self.sync_status()
         self.save_autosave()
         self.publish(self.world_init_payload())
@@ -298,14 +303,15 @@ class Runtime:
             world_id=world_id,
             world_name=clean_name,
         )
+        pid = new_sim.primary_id
         s_name = (starter_name or "").strip()[:32]
         if s_name:
             new_sim.primary.name = s_name
         new_sim.primary.role = starter_role
 
         self.worlds[world_id] = new_sim
-        self.brains_by_world[world_id] = {"aiden": Brain(timeout=self.default_timeout)}
-        self.next_ticks_by_world[world_id] = {"aiden": 0}
+        self.brains_by_world[world_id] = {pid: Brain(timeout=self.default_timeout)}
+        self.next_ticks_by_world[world_id] = {pid: 0}
 
         if switch:
             await self.cancel_thinking()
@@ -348,11 +354,8 @@ class Runtime:
         await self.cancel_thinking()
         src = self.sim
         dst = self.worlds[target_world]
-        # Carry player purse, shared party inventory, tools, and needs across worlds
+        # Each world has independent AI inhabitants with their own mind, needs & bags; share realm coin purse only.
         dst.coins = src.coins
-        dst.primary.inventory = dict(src.primary.inventory)
-        dst.primary.needs = dict(src.primary.needs)
-        dst.primary.household.tools = dict(src.primary.household.tools)
         self.active_world_id = target_world
         dst_brains = self.brains_by_world.setdefault(target_world, {})
         for aid in dst.agents:
@@ -546,8 +549,8 @@ def create_app(seed: int | None = None, brain: Brain | None = None, persist: boo
     @app.delete("/api/agents/{agent_id}")
     async def delete_agent(agent_id: str):
         rt = runtime()
-        if agent_id == "aiden":
-            raise HTTPException(422, "Cannot remove primary NPC Aiden")
+        if agent_id == rt.sim.primary_id:
+            raise HTTPException(422, f"Cannot remove primary NPC {rt.sim.primary.name}")
         if agent_id not in rt.sim.agents:
             raise HTTPException(404, "Agent not found")
         await rt.cancel_thinking(agent_id)
@@ -564,7 +567,7 @@ def create_app(seed: int | None = None, brain: Brain | None = None, persist: boo
     @app.post("/api/llm/config")
     async def configure(patch: ConfigPatch, agent_id: str | None = Query(default=None)):
         rt = runtime()
-        aid = agent_id or "aiden"
+        aid = agent_id or rt.sim.primary_id
         b = rt.get_brain(aid)
         try:
             b.configure(patch.model_dump(exclude_none=True))
