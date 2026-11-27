@@ -447,7 +447,15 @@ class Runtime:
             if decision is not None:
                 valid = agent.can_start(decision.action, decision.params)
                 if valid:
-                    agent.queued_decision = decision
+                    if (
+                        not agent.threatened_by
+                        and not agent.hostile_target
+                        and agent.current_action not in {"attack", "sleep", "drink", "eat"}
+                        and agent.apply_decision(decision)
+                    ):
+                        agent.queued_decision = None
+                    else:
+                        agent.queued_decision = decision
                 else:
                     trace["used_fallback"] = True
                     trace["error"] = "Decision is not executable in the current world/inventory."
@@ -617,10 +625,19 @@ class Runtime:
                         if not b:
                             continue
                         next_tick = self.next_think_ticks.get(aid, 0)
-                        if aid not in self.thinking_tasks and self.sim.tick >= next_tick:
+                        interval = b.config.decision_interval_ticks
+                        min_cooldown_tick = next_tick - max(0, interval - 10)
+                        ready_after_job = (
+                            b.configured()
+                            and not b.fallback_active
+                            and agent.job is None
+                            and agent.queued_decision is None
+                            and self.sim.tick >= min_cooldown_tick
+                        )
+                        if aid not in self.thinking_tasks and (self.sim.tick >= next_tick or ready_after_job):
                             snap = self.sim.snapshot_for_agent(aid)
                             self.thinking_tasks[aid] = asyncio.create_task(b.decide(snap, agent_id=aid))
-                            self.next_think_ticks[aid] = self.sim.tick + b.config.decision_interval_ticks
+                            self.next_think_ticks[aid] = self.sim.tick + interval
                     self.broadcast_tick()
                     if self.persist and self.sim.tick - self._last_autosave_tick >= 25:
                         self.save_autosave()

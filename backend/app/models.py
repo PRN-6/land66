@@ -20,7 +20,7 @@ class LLMConfig(BaseModel):
     base_url: str = Field(default="", max_length=2048)
     api_key: SecretStr = Field(default=SecretStr(""), exclude=True)
     temperature: float = Field(default=.7, ge=0, le=2)
-    decision_interval_ticks: int = Field(default=100, ge=10, le=10000)
+    decision_interval_ticks: int = Field(default=100, ge=5, le=10000)
     enabled: bool = False
     locked: bool = False
 

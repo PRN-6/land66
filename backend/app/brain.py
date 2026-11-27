@@ -33,16 +33,94 @@ def system_prompt_for(name: str = "Aiden", role: str = "pioneer") -> str:
 
 
 def parse_decision(raw: str) -> Decision:
-    raw = raw.strip()
-    if raw.startswith("```"):
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.S | re.I).strip()
+    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, flags=re.S | re.I)
+    if fence:
+        raw = fence.group(1).strip()
+    elif raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I)
-        raw = re.sub(r"\s*```$", "", raw)
+        raw = re.sub(r"\s*```$", "", raw).strip()
     # Do not guess at partial JSON or silently accept unrelated prose.
     return Decision.model_validate(json.loads(raw))
 
 
+def compact_llm_prompt(snapshot: dict) -> dict:
+    """Distill the world snapshot into a crisp, zero-trimmed LLM context (~10x fewer tokens)."""
+    npc_in = snapshot.get("npc") or {}
+    inv_nonzero = {k: v for k, v in (npc_in.get("inventory") or {}).items() if isinstance(v, (int, float)) and v > 0}
+    needs_round = {k: round(float(v)) for k, v in (npc_in.get("needs") or {}).items()}
+    perc = npc_in.get("perception") or {}
+    my_id = npc_in.get("id", "aiden")
+    peers = [
+        {
+            "id": a.get("id"),
+            "name": a.get("name"),
+            "role": a.get("role"),
+            "health": round(float((a.get("needs") or {}).get("health", 100))),
+            "pos": a.get("grid_pos"),
+        }
+        for a in (snapshot.get("agents") or [])
+        if a.get("id") != my_id
+    ]
+    out: dict = {
+        "day": snapshot.get("day"),
+        "clock": snapshot.get("clock_str"),
+        "phase": snapshot.get("phase"),
+        "weather": snapshot.get("weather"),
+        "world": snapshot.get("world_id", "homestead"),
+        "coins": snapshot.get("coins"),
+        "self": {
+            "id": my_id,
+            "name": npc_in.get("name", "Aiden"),
+            "role": npc_in.get("role", "pioneer"),
+            "pos": npc_in.get("grid_pos"),
+            "action": npc_in.get("current_action"),
+            "goal": npc_in.get("current_goal"),
+            "thought": npc_in.get("thought"),
+            "needs": needs_round,
+            "inventory": inv_nonzero,
+            "weapons": [k for k, v in (npc_in.get("weapons") or {}).items() if (v or {}).get("owned", 0) > 0],
+            "tools": [k for k, v in (npc_in.get("tools") or {}).items() if (v or {}).get("owned", 0) > 0],
+            "location": perc.get("location_label"),
+            "sheltered": perc.get("sheltered"),
+            "visible": perc.get("visible_summary"),
+            "nearest": perc.get("nearest_distances"),
+            "memories": [m.get("text") for m in (npc_in.get("memories") or [])[-6:] if isinstance(m, dict) and m.get("text")],
+        },
+        "stats": {
+            k: (snapshot.get("stats") or {}).get(k)
+            for k in ("house_progress", "house_stage", "trees_count", "crops_ripe", "farm_plots")
+            if (snapshot.get("stats") or {}).get(k) is not None
+        },
+    }
+    if npc_in.get("hostile_target"):
+        out["self"]["hostile_target"] = npc_in.get("hostile_target")
+    if npc_in.get("threatened_by"):
+        out["self"]["threatened_by"] = npc_in.get("threatened_by")
+    if peers:
+        out["peers"] = peers
+    gate = snapshot.get("gate")
+    if isinstance(gate, dict) and out["world"] == "homestead":
+        out["gate"] = {
+            "discovered": gate.get("discovered"),
+            "unlocked": gate.get("unlocked"),
+            "progress": gate.get("progress"),
+            "missing": gate.get("missing_items"),
+        }
+    drops = snapshot.get("dropped_items") or []
+    if drops:
+        out["dropped_items"] = [
+            {"item": d.get("item"), "amount": d.get("amount"), "landed": d.get("landed"), "pos": d.get("grid_pos")}
+            for d in drops[:6]
+        ]
+    ents = snapshot.get("entities") or []
+    if ents:
+        out["entities"] = [{"kind": e.get("kind"), "name": e.get("name"), "pos": e.get("grid_pos")} for e in ents[:8]]
+    return out
+
+
 class Brain:
-    def __init__(self, config: LLMConfig | None = None, timeout: float = 12, transport=None):
+    def __init__(self, config: LLMConfig | None = None, timeout: float = 30, transport=None):
         self.config = config or LLMConfig.from_env()
         self.timeout = timeout
         self.transport = transport
@@ -97,7 +175,7 @@ class Brain:
                 stream=False,
                 format="json",
                 keep_alive="10m",
-                options={"temperature": c.temperature, "num_predict": 240},
+                options={"temperature": c.temperature, "num_predict": 450},
             )
         elif c.provider == "gemini":
             url = f"{base}/models/{quote(c.model, safe='')}:generateContent"
@@ -129,7 +207,8 @@ class Brain:
         agent_name = npc_info.get("name", "Aiden")
         agent_role = npc_info.get("role", "pioneer")
         sys_prompt = system_prompt_for(agent_name, agent_role)
-        prompt = json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False)
+        compact = compact_llm_prompt(snapshot)
+        prompt = json.dumps(compact, separators=(",", ":"), ensure_ascii=False)
         started = time.perf_counter()
         raw, error, decision = "", None, None
         requested = self.configured(c)

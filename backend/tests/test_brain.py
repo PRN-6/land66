@@ -137,3 +137,42 @@ def test_slow_client_overflow_requires_resync():
     rt.publish({'type':'tick_update'})
     rt.publish({'type':'tick_update'})
     assert queue.get_nowait() is None and queue not in rt.clients
+
+
+def test_compact_prompt_think_tags_and_immediate_llm_execution():
+    # Think tags & fenced JSON parse cleanly without breaking invalid-prose rejection
+    tagged = f"<think>Checking pond vs trees.</think>\n```json\n{json.dumps(VALID)}\n```"
+    assert parse_decision(tagged).action == 'explore'
+
+    captured_prompts = []
+
+    async def handle(request):
+        body = json.loads(request.content)
+        captured_prompts.append(body['messages'][1]['content'])
+        choice = {'thought': 'Time to forage berries myself!', 'goal': 'Pick wild berries', 'action': 'forage', 'params': {}}
+        return httpx.Response(200, json={'message': {'content': json.dumps(choice)}})
+
+    async def scenario():
+        b = Brain(
+            LLMConfig(provider='ollama', model='llama3.2', base_url='http://localhost:11434', enabled=True),
+            transport=httpx.MockTransport(handle),
+        )
+        rt = Runtime(brain=b)
+        snap = rt.sim.snapshot_for_agent('aiden')
+        rt.thinking_tasks['aiden'] = asyncio.create_task(b.decide(snap, agent_id='aiden'))
+        await rt.thinking_tasks['aiden']
+        rt.complete_thinking()
+
+        # NPC adopts Ollama's autonomous thought, goal, and action immediately
+        ag = rt.sim.agents['aiden']
+        assert ag.current_action == 'forage'
+        assert ag.thought == 'Time to forage berries myself!'
+        assert ag.current_goal == 'Pick wild berries'
+        assert b.fallback_active is False
+
+        # Compact prompt excludes all-zero inventory bloat while retaining core state
+        sent = json.loads(captured_prompts[0])
+        assert 'inventory' in sent['self'] and all(v > 0 for v in sent['self']['inventory'].values())
+        assert 'location' in sent['self'] and 'needs' in sent['self']
+
+    asyncio.run(scenario())

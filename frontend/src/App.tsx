@@ -291,8 +291,12 @@ export function App() {
           setConnMode('live');
           sceneRef.current?.applyWorldInit(msg);
           setWorldState(msg.state);
-          setSelectedAgentId(primaryId);
-          sceneRef.current?.setSelectedAgent(primaryId);
+          setSelectedAgentId((prev) => {
+            const exists = (msg.state.agents ?? []).some((a, idx) => (a.id ?? (idx === 0 ? 'aiden' : `npc-${idx + 1}`)) === prev);
+            const nextId = exists ? prev : primaryId;
+            sceneRef.current?.setSelectedAgent(nextId);
+            return nextId;
+          });
         } else if (msg.type === 'tick_update') {
           if (connectionModeRef.current !== 'live') setConnMode('live');
           sceneRef.current?.applyTickUpdate(msg.block_updates, msg.state);
