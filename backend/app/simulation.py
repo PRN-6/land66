@@ -210,6 +210,8 @@ class NpcAgent:
         self.target: Pos | None = None
         self.job: dict | None = None
         self.progress = 0.0
+        self._stall_ticks = 0
+        self._prev_pos_check: list[float] | None = None
         self.memories: list[dict] = []
         self.journal: list[dict] = []
         self.explored = agent_id != "aiden"
@@ -1015,10 +1017,42 @@ class NpcAgent:
         for k in n:
             n[k] = max(0, min(100, n[k]))
 
+    def recover_if_trapped(self) -> bool:
+        """Relocate NPC onto the nearest walkable block if boxed in or placed on a solid/non-walkable cell."""
+        w = self.sim.world
+        if w.walkable(self.grid_pos):
+            return False
+        gx, gy, gz = self.grid_pos
+        candidates: list[Pos] = []
+        for r in range(1, 4):
+            for dx in range(-r, r + 1):
+                for dz in range(-r, r + 1):
+                    for dy in (0, 1, -1):
+                        cand = (gx + dx, gy + dy, gz + dz)
+                        if w.walkable(cand):
+                            candidates.append(cand)
+            if candidates:
+                break
+        if not candidates:
+            fallback_spot = self.sim._find_open_spot(self.grid_pos)
+            if fallback_spot:
+                candidates.append(fallback_spot)
+        if not candidates:
+            return False
+        candidates.sort(key=lambda p: (abs(p[1] - gy), distance(self.position, p)))
+        best = candidates[0]
+        self.grid_pos = best
+        self.position = [float(best[0]), float(best[1]), float(best[2])]
+        self.path, self.job, self.target = [], None, None
+        self.animation, self.current_action, self.progress = "idle", "idle", 0.0
+        self._stall_ticks = 0
+        return True
+
     def step_agent(self, dt: float):
         w = self.sim.world
         self.update_needs(dt)
         self.household.update_personal(dt)
+        self.recover_if_trapped()
         if self.job and not self.path and min(self.needs["hunger"], self.needs["thirst"]) < 15 and self.current_action not in {"eat", "drink", "forage", "craft"}:
             self.job = None
         if not self.job:
@@ -1029,10 +1063,12 @@ class NpcAgent:
                 self.position = list(map(float, self.grid_pos))
                 self.path, self.job = [], None
                 self.animation = "idle"
+                self._stall_ticks = 0
                 return
             for y in (target[1], target[1] + 1):
                 if w.get(target[0], y, target[2]) == DOOR:
                     w.set(target[0], y, target[2], OPEN_DOOR)
+            prev_pos = list(self.position)
             delta = [target[i] - self.position[i] for i in range(3)]
             length = math.sqrt(sum(d * d for d in delta))
             self.yaw = math.atan2(delta[0], delta[2])
@@ -1040,14 +1076,27 @@ class NpcAgent:
             if length <= travel:
                 self.position, self.grid_pos = list(map(float, target)), target
                 self.path.pop(0)
+                self._stall_ticks = 0
             else:
                 self.position = [self.position[i] + delta[i] / length * travel for i in range(3)]
+                moved = math.dist(prev_pos, self.position)
+                self._stall_ticks = 0 if moved > 0.004 else (self._stall_ticks + 1)
+                if self._stall_ticks >= 15:
+                    self.path, self.job, self.target = [], None, None
+                    self.animation, self.current_action, self.progress = "idle", "idle", 0.0
+                    self._stall_ticks = 0
+                    return
             self.animation = "walking"
             return
         if self.job:
             self.animation = ANIMATION.get(self.current_action, "idle")
             self.job["elapsed"] += dt
-            self.progress = min(1, self.job["elapsed"] / self.job["duration"])
+            dur = max(0.1, float(self.job["duration"]))
+            self.progress = min(1, self.job["elapsed"] / dur)
+            if self.job["elapsed"] > dur * 3.0 + 12.0:
+                self.job, self.target, self.path = None, None, []
+                self.animation, self.current_action, self.progress = "idle", "idle", 0.0
+                return
             if self.progress >= 1 or (self.current_action == "sleep" and self.sim.phase != "night" and self.needs["energy"] >= 96):
                 self.finish_job()
 

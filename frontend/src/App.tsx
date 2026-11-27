@@ -764,6 +764,16 @@ export function App() {
           onToggleOfflineDemo={handleToggleOfflineDemo}
         />
 
+        {worldState.paused && (
+          <button
+            type="button"
+            onClick={() => void handleControl('resume')}
+            className="pointer-events-auto mx-auto mt-2 px-3 py-1 rounded-full bg-white text-neutral-950 hover:bg-neutral-200 text-[11px] font-semibold shadow-lg transition cursor-pointer"
+          >
+            Simulation Paused · Click to Resume
+          </button>
+        )}
+
         {bannerError && (
           <div className="pointer-events-auto mx-auto mt-2 px-3 py-1 rounded-full bg-neutral-950/90 border border-white/15 text-[11px] text-neutral-200 shadow-lg">
             {bannerError}

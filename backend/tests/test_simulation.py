@@ -407,3 +407,29 @@ def test_npc_autonomously_solves_and_builds_teleport_gate():
     assert s.gate_discovered
     assert s.gate_unlocked
     assert s.gate_progress() == 100.0
+
+
+def test_npc_recovers_if_trapped_on_non_walkable_cell_or_blocked_fixture():
+    from app.catalog import FIXTURES
+    from app.world import STONE
+
+    s = Simulation(seed=66)
+    for b in s.blueprint:
+        s.change_block(b.pos, b.block, material=b.surface_material)
+
+    # Box an NPC inside a solid block right on their own tile -> recover_if_trapped frees them
+    ag = s.primary
+    ag.grid_pos = (16, 11, 15)
+    ag.position = [16.0, 11.0, 15.0]
+    s.change_block((16, 11, 15), STONE)
+    assert not s.world.walkable((16, 11, 15))
+    s.step(0.1)
+    assert s.world.walkable(ag.grid_pos)
+    assert ag.grid_pos != (16, 11, 15)
+
+    # If the stove fixture spot is occupied by another block, choose_upgrades skips crafting/stalling on it
+    stove_pos = FIXTURES['stove']['position']
+    s.change_block(stove_pos, STONE)
+    ag.inventory['stove'] = 0
+    ag.job = None
+    assert not ag.household.choose_upgrades() or ag.current_action != 'furnish' or ag.target != stove_pos

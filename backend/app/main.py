@@ -658,7 +658,8 @@ class Runtime:
 
 
 def create_app(seed: int | None = None, brain: Brain | None = None, persist: bool | None = None) -> FastAPI:
-    use_persist = ("PYTEST_CURRENT_TEST" not in os.environ) if persist is None else bool(persist)
+    no_persist = "PYTEST_CURRENT_TEST" in os.environ or os.getenv("LAND66_NO_PERSIST", "").lower() in {"1", "true", "yes"}
+    use_persist = (not no_persist) if persist is None else bool(persist)
 
     @asynccontextmanager
     async def lifespan(app):

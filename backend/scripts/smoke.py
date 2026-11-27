@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -19,8 +20,10 @@ def main():
         sock.bind(("127.0.0.1", 8000))
     log_path = root / "smoke-server.log"
     with log_path.open("w", encoding="utf-8") as log:
+        smoke_env = os.environ.copy()
+        smoke_env["LAND66_NO_PERSIST"] = "1"
         proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
-                                cwd=root, stdout=log, stderr=subprocess.STDOUT,
+                                cwd=root, env=smoke_env, stdout=log, stderr=subprocess.STDOUT,
                                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         try:
             with httpx.Client(base_url="http://127.0.0.1:8000", timeout=1, trust_env=False) as client:

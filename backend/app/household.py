@@ -368,10 +368,18 @@ class Household:
             if not s.inventory[tool]:
                 if self.ensure(tool):
                     return True
-        for key in FIXTURES:
+        for key, f in FIXTURES.items():
             if not self.has_fixture(key):
+                cur_block = s.world.get(*f["position"])
+                if cur_block == f["block"]:
+                    self.installed.add(key)
+                    continue
+                if cur_block != AIR:
+                    continue
                 if s.inventory[key] < 1:
-                    return self.ensure(key)
+                    if self.ensure(key):
+                        return True
+                    continue
                 if s.choose("furnish",f"A {key.replace('_',' ')} will make everyday life here easier.","Furnish my home",fixture=key):
                     return True
         if self.has_fixture("compost_bin") and len(self.fertilized_plots) < len(s.world.locations[FARMLAND]):
